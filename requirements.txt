@@ -20,9 +20,6 @@ plotly==5.18.0
 # Date/Time
 python-dateutil==2.8.2
 
-# Email Sending (for reminders)
-# smtplib is built-in to Python, no need to install
-
 # Configuration
 pyyaml==6.0.1
 
@@ -32,4 +29,3 @@ python-dotenv==1.0.1
 # Optional: For phone notifications
 # twilio==8.10.0  # Uncomment if using SMS reminders
 # requests==2.31.0  # Already included via streamlit
-

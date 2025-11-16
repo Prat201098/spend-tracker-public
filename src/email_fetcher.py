@@ -1,0 +1,181 @@
+"""
+Email fetcher module for retrieving credit card statement emails.
+Supports IMAP for most email providers.
+"""
+
+import imaplib
+import email
+from email.header import decode_header
+from email.utils import parsedate_to_datetime
+from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+import re
+
+
+class EmailFetcher:
+    """Fetches emails from IMAP server."""
+    
+    def __init__(self, imap_server: str, imap_port: int = 993, use_ssl: bool = True):
+        """Initialize email fetcher with IMAP settings."""
+        self.imap_server = imap_server
+        self.imap_port = imap_port
+        self.use_ssl = use_ssl
+        self.connection = None
+    
+    def connect(self, email_address: str, password: str):
+        """Connect to IMAP server."""
+        try:
+            if self.use_ssl:
+                self.connection = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
+            else:
+                self.connection = imaplib.IMAP4(self.imap_server, self.imap_port)
+            
+            self.connection.login(email_address, password)
+            self.connection.select('INBOX')
+            return True
+        except Exception as e:
+            print(f"Error connecting to email: {e}")
+            return False
+    
+    def disconnect(self):
+        """Close IMAP connection."""
+        if self.connection:
+            try:
+                self.connection.close()
+                self.connection.logout()
+            except:
+                pass
+    
+    def _decode_header(self, header_value):
+        """Decode email header values."""
+        if header_value is None:
+            return ""
+        
+        decoded_parts = decode_header(header_value)
+        decoded_string = ""
+        for part, encoding in decoded_parts:
+            if isinstance(part, bytes):
+                decoded_string += part.decode(encoding or 'utf-8', errors='ignore')
+            else:
+                decoded_string += part
+        return decoded_string
+    
+    def search_emails(self, sender_pattern: str = None, subject_keywords: List[str] = None,
+                     days_back: int = 30) -> List[Dict]:
+        """Search for emails matching criteria."""
+        if not self.connection:
+            return []
+        
+        try:
+            # Build search criteria - use simpler IMAP syntax
+            search_criteria = []
+            
+            # Date filter
+            date_since = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
+            search_criteria.append(f'SINCE {date_since}')
+            
+            # Sender filter - IMAP FROM expects the domain part
+            if sender_pattern:
+                # Remove @ symbol for IMAP search
+                domain = sender_pattern.lstrip('@')
+                search_criteria.append(f'FROM {domain}')
+            
+            # Build search query - IMAP uses space-separated criteria
+            search_query = ' '.join(search_criteria)
+            
+            # Search for emails by sender and date
+            status, messages = self.connection.search(None, search_query)
+            
+            if status != 'OK':
+                print(f"IMAP search failed: {messages}")
+                return []
+            
+            email_ids = messages[0].split()
+            emails = []
+            
+            # Filter by subject keywords in Python (more reliable than IMAP SUBJECT)
+            for email_id in email_ids:
+                try:
+                    status, msg_data = self.connection.fetch(email_id, '(RFC822)')
+                    if status == 'OK':
+                        raw_email = msg_data[0][1]
+                        email_message = email.message_from_bytes(raw_email)
+                        
+                        subject = self._decode_header(email_message['Subject'])
+                        subject_lower = subject.lower()
+                        from_addr = self._decode_header(email_message['From']).lower()
+                        
+                        # Check if subject matches exact pattern first (if provided)
+                        matches_subject = True
+                        if subject_keywords:
+                            # Check for exact pattern match (if available in config)
+                            # This will be checked in main.py, but for now use keywords
+                            matches_subject = any(
+                                kw.lower() in subject_lower for kw in subject_keywords
+                            )
+                        
+                        # Check if sender matches pattern
+                        matches_sender = True
+                        if sender_pattern:
+                            domain = sender_pattern.lstrip('@').lower()
+                            matches_sender = domain in from_addr
+                        
+                        # Only include if both match
+                        if matches_subject and matches_sender:
+                            email_data = {
+                                'id': email_id.decode(),
+                                'subject': self._decode_header(email_message['Subject']),
+                                'from': self._decode_header(email_message['From']),
+                                'date': parsedate_to_datetime(email_message['Date']),
+                                'body': self._get_email_body(email_message),
+                                'attachments': self._get_attachments(email_message)
+                            }
+                            emails.append(email_data)
+                except Exception as e:
+                    print(f"Error processing email {email_id}: {e}")
+                    continue
+            
+            return emails
+            
+        except Exception as e:
+            print(f"Error searching emails: {e}")
+            return []
+    
+    def _get_email_body(self, email_message) -> str:
+        """Extract email body text."""
+        body = ""
+        
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                content_type = part.get_content_type()
+                if content_type == "text/plain":
+                    try:
+                        body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    except:
+                        pass
+        else:
+            try:
+                body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
+            except:
+                pass
+        
+        return body
+    
+    def _get_attachments(self, email_message) -> List[Dict]:
+        """Extract email attachments."""
+        attachments = []
+        
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                if part.get_content_disposition() == 'attachment':
+                    filename = part.get_filename()
+                    if filename:
+                        filename = self._decode_header(filename)
+                        attachments.append({
+                            'filename': filename,
+                            'content_type': part.get_content_type(),
+                            'payload': part.get_payload(decode=True)
+                        })
+        
+        return attachments
+

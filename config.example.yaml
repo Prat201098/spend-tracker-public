@@ -1,0 +1,14 @@
+﻿imap:
+  server: imap.gmail.com
+  port: 993
+
+fixed_expenses:
+  - name: Rent
+    amount: 37000
+    category: Bills & Utilities
+  - name: Maid & Cook
+    amount: 2500
+    category: Household
+  - name: Clothes Press
+    amount: 500
+    category: Household

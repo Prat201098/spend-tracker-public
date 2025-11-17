@@ -8,7 +8,7 @@ import email
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as date_cls
 import re
 
 
@@ -61,7 +61,8 @@ class EmailFetcher:
         return decoded_string
     
     def search_emails(self, sender_pattern: str = None, subject_keywords: List[str] = None,
-                     days_back: int = 30) -> List[Dict]:
+                     days_back: int = 30, max_fetch: int = None,
+                     start_date: Optional[date_cls] = None, end_date: Optional[date_cls] = None) -> List[Dict]:
         """Search for emails matching criteria."""
         if not self.connection:
             return []
@@ -71,8 +72,15 @@ class EmailFetcher:
             search_criteria = []
             
             # Date filter
-            date_since = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-            search_criteria.append(f'SINCE {date_since}')
+            if start_date:
+                since_str = start_date.strftime("%d-%b-%Y")
+            else:
+                since_str = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
+            search_criteria.append(f'SINCE {since_str}')
+
+            if end_date:
+                before_str = (end_date + timedelta(days=1)).strftime("%d-%b-%Y")
+                search_criteria.append(f'BEFORE {before_str}')
             
             # Sender filter - IMAP FROM expects the domain part
             if sender_pattern:
@@ -91,6 +99,9 @@ class EmailFetcher:
                 return []
             
             email_ids = messages[0].split()
+            # Limit to the most recent N IDs to speed up processing, if requested
+            if max_fetch and len(email_ids) > max_fetch:
+                email_ids = email_ids[-max_fetch:]
             emails = []
             
             # Filter by subject keywords in Python (more reliable than IMAP SUBJECT)
@@ -122,11 +133,15 @@ class EmailFetcher:
                         
                         # Only include if both match
                         if matches_subject and matches_sender:
+                            try:
+                                parsed_date = parsedate_to_datetime(email_message['Date']) if email_message['Date'] else None
+                            except Exception:
+                                parsed_date = None
                             email_data = {
                                 'id': email_id.decode(),
                                 'subject': self._decode_header(email_message['Subject']),
                                 'from': self._decode_header(email_message['From']),
-                                'date': parsedate_to_datetime(email_message['Date']),
+                                'date': parsed_date,
                                 'body': self._get_email_body(email_message),
                                 'attachments': self._get_attachments(email_message)
                             }

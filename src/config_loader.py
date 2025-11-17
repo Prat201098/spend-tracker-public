@@ -87,6 +87,7 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     # Minimal defaults
     cfg.setdefault("database", {}).setdefault("path", "data/spend_tracker.db")
     cfg.setdefault("email", {}).setdefault("bank_emails", [])
+    cfg["email"].setdefault("max_emails_per_card", 12)
 
     # Apply secrets overlays
     _apply_pdf_password_secrets(cfg)

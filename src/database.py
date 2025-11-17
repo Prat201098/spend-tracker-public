@@ -8,7 +8,6 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
-import yaml
 
 
 class SpendDatabase:
@@ -146,6 +145,48 @@ class SpendDatabase:
         finally:
             conn.close()
 
+    def clear_processed_emails(self, card_name: str = None) -> int:
+        """Delete processed email flags. If card_name is None, clears all."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            if card_name:
+                cursor.execute("DELETE FROM processed_emails WHERE card_name = ?", (card_name,))
+            else:
+                cursor.execute("DELETE FROM processed_emails")
+            affected = cursor.rowcount
+            conn.commit()
+            return affected
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def clear_processed_emails_for_month(self, card_name: str, year: int, month: int) -> int:
+        """Delete processed email flags for a card within a given month/year (based on email_date)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            start = datetime(year, month, 1).strftime('%Y-%m-%d')
+            if month == 12:
+                end = datetime(year + 1, 1, 1).strftime('%Y-%m-%d')
+            else:
+                end = datetime(year, month + 1, 1).strftime('%Y-%m-%d')
+            cursor.execute(
+                """
+                DELETE FROM processed_emails
+                WHERE card_name = ? AND email_date >= ? AND email_date < ?
+                """,
+                (card_name, start, end)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            return affected
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
     def set_monthly_verification(self, card_name: str, month: int, year: int,
                                  computed_total: float, verified: bool, verification_diff: float):
         """Update verification fields for a monthly summary."""
@@ -250,6 +291,31 @@ class SpendDatabase:
         df = pd.read_sql_query(query, conn, params=params)
         conn.close()
         return df
+
+    def delete_transactions_for_month(self, card_name: str, year: int, month: int) -> int:
+        """Delete all transactions for a card within a given month/year."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            start = datetime(year, month, 1).strftime('%Y-%m-%d')
+            if month == 12:
+                end = datetime(year + 1, 1, 1).strftime('%Y-%m-%d')
+            else:
+                end = datetime(year, month + 1, 1).strftime('%Y-%m-%d')
+            cursor.execute(
+                """
+                DELETE FROM transactions
+                WHERE card_name = ? AND transaction_date >= ? AND transaction_date < ?
+                """,
+                (card_name, start, end)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            return affected
+        except Exception:
+            return 0
+        finally:
+            conn.close()
     
     def get_monthly_summaries(self, card_name: str = None) -> pd.DataFrame:
         """Get monthly summaries as DataFrame."""

@@ -22,6 +22,9 @@ from src.analyzer import SpendAnalyzer
 from src.reminder_system import ReminderSystem
 from src.cost_analyzer import CostAnalyzer
 from src.config_loader import load_config as load_app_config
+from src.email_fetcher import EmailFetcher
+from src.email_parser import EmailParser
+from src.transaction_classifier import TransactionClassifier
 
 
 # Page configuration
@@ -62,11 +65,13 @@ def main():
     st.sidebar.header("Navigation")
     page = st.sidebar.selectbox(
         "Choose a page",
-        ["Fetch Emails", "Overview", "Enhanced Analysis", "Cost Analyzer", "Monthly Analysis", "Spending Breakdown", "Bill Reminders", "Transactions"]
+        ["Fetch Emails", "Verify & Backfill", "Overview", "Enhanced Analysis", "Cost Analyzer", "Monthly Analysis", "Spending Breakdown", "Bill Reminders", "Transactions"]
     )
     
     if page == "Fetch Emails":
         show_fetch_emails()
+    elif page == "Verify & Backfill":
+        show_verify_backfill()
     elif page == "Overview":
         show_overview(analyzer, reminder_system)
     elif page == "Enhanced Analysis":
@@ -96,11 +101,19 @@ def show_fetch_emails():
         
         col1, col2 = st.columns(2)
         with col1:
-            fetch_from_2024 = st.checkbox("Fetch From 2024 Onwards", value=True,
-                                         help="Fetches all emails from January 1, 2024. Uncheck to use custom days.")
+            fetch_from_2024 = st.checkbox("Fetch From 2024 Onwards", value=False,
+                                         help="For the very first backfill only. Leave unchecked for faster runs.")
         with col2:
             days_back = st.number_input("Days to Look Back", min_value=1, max_value=3650, 
-                                       value=30, disabled=fetch_from_2024)
+                                       value=45, disabled=fetch_from_2024)
+
+        st.write("")
+        col3, col4 = st.columns(2)
+        with col3:
+            enable_quick = st.checkbox("Quick Mode (limit statements per card)", value=True)
+        with col4:
+            max_per_card = st.number_input("Limit per card", min_value=1, max_value=24, value=12, step=1,
+                                           disabled=not enable_quick)
         
         submitted = st.form_submit_button("🚀 Fetch & Process Emails", use_container_width=True)
     
@@ -113,7 +126,12 @@ def show_fetch_emails():
                     from main import fetch_and_process_emails
                     
                     days = None if fetch_from_2024 else days_back
-                    result = fetch_and_process_emails(email_address, email_password, days_back=days)
+                    result = fetch_and_process_emails(
+                        email_address,
+                        email_password,
+                        days_back=days,
+                        max_emails_per_card=(max_per_card if enable_quick else None)
+                    )
                     
                     if result and result.get('success'):
                         st.success(f"✅ Successfully processed {result.get('emails_processed', 0)} emails!")
@@ -150,6 +168,211 @@ def show_fetch_emails():
             st.info("No transactions found. Fetch emails to get started!")
     except Exception as e:
         st.info("No transactions found yet. Fetch emails to get started!")
+
+    st.divider()
+    st.subheader("🧰 History & Speed Tools")
+    with st.expander("Mark history verified (skips old months on future runs)"):
+        db = get_database()
+        colA, colB = st.columns(2)
+        with colA:
+            hist_month = st.selectbox("Month", list(range(1, 13)), index=datetime.now().month - 1)
+        with colB:
+            hist_year = st.number_input("Year", min_value=2024, max_value=datetime.now().year, value=datetime.now().year)
+        if st.button("✅ Mark history up to selected month verified", use_container_width=True):
+            try:
+                ms = db.get_monthly_summaries()
+                if ms.empty:
+                    st.info("No monthly summaries yet. Run a fetch first.")
+                else:
+                    updated = 0
+                    for _, row in ms.iterrows():
+                        y = int(row.get('year'))
+                        m = int(row.get('month'))
+                        if (y < hist_year) or (y == hist_year and m <= hist_month):
+                            comp = float(row.get('computed_total') or row.get('total_spend') or 0.0)
+                            db.set_monthly_verification(
+                                card_name=row.get('card_name'),
+                                month=m,
+                                year=y,
+                                computed_total=comp,
+                                verified=True,
+                                verification_diff=0.0
+                            )
+                            updated += 1
+                    st.success(f"Marked {updated} month records as verified. Future runs will skip these months.")
+            except Exception as ex:
+                st.error(f"Failed to mark history verified: {ex}")
+
+
+def show_verify_backfill():
+    """One-month preview and commit flow, then full backfill.
+    Lets you validate parsing before writing to DB.
+    """
+    st.header("🔎 Verify & Backfill")
+    st.write("Preview one month for a specific card, confirm, then backfill history.")
+
+    config = load_config()
+    db = get_database()
+
+    # Credentials
+    with st.expander("Step 1: Email credentials", expanded=True):
+        colA, colB = st.columns(2)
+        with colA:
+            email_address = st.text_input("Email Address", key="vf_email")
+        with colB:
+            email_password = st.text_input("App Password", type="password", key="vf_pass")
+
+    # Selection
+    with st.expander("Step 2: Select card & month", expanded=True):
+        bank_configs = config.get('email', {}).get('bank_emails', [])
+        cards = [b.get('card_name') for b in bank_configs]
+        card = st.selectbox("Card", cards)
+        col1, col2 = st.columns(2)
+        with col1:
+            year = st.number_input("Year", min_value=2024, max_value=datetime.now().year, value=datetime.now().year)
+        with col2:
+            month = st.selectbox("Month", list(range(1, 13)), index=datetime.now().month-1)
+
+        preview_btn = st.button("👁️ Preview this month (no DB write)")
+
+    if preview_btn:
+        if not email_address or not email_password:
+            st.error("Enter email + app password first.")
+            return
+
+        # Find bank config
+        bcfg = next((b for b in config['email'].get('bank_emails', []) if b.get('card_name') == card), None)
+        if not bcfg:
+            st.error("Card configuration not found.")
+            return
+
+        # Compute month bounds
+        first = datetime(int(year), int(month), 1).date()
+        if int(month) == 12:
+            next_first = datetime(int(year)+1, 1, 1).date()
+        else:
+            next_first = datetime(int(year), int(month)+1, 1).date()
+        last = next_first - timedelta(days=1)
+
+        # Fetch emails for the month
+        ef = EmailFetcher(
+            imap_server=config['email']['imap_server'],
+            imap_port=config['email']['imap_port'],
+            use_ssl=config['email']['use_ssl']
+        )
+        with st.spinner("Connecting and fetching emails for selected month..."):
+            if not ef.connect(email_address, email_password):
+                st.error("Failed to connect to email.")
+                return
+            emails = ef.search_emails(
+                sender_pattern=bcfg.get('sender_pattern'),
+                subject_keywords=bcfg.get('subject_keywords'),
+                start_date=first,
+                end_date=last,
+                max_fetch=24
+            )
+            ef.disconnect()
+
+        st.info(f"Found {len(emails)} emails for {card} in {month}/{year}.")
+
+        # Parse emails (no DB write)
+        parser = EmailParser(card, pdf_password=bcfg.get('pdf_password'))
+        parsed_transactions = []
+        monthly_summary = None
+        due_date = None
+        for e in emails:
+            pdata = parser.parse_email(e)
+            if pdata.get('transactions'):
+                parsed_transactions.extend(pdata['transactions'])
+            if not monthly_summary and pdata.get('monthly_summary'):
+                monthly_summary = pdata['monthly_summary']
+            if not due_date and pdata.get('due_date'):
+                due_date = pdata['due_date']
+
+        st.subheader("Preview Transactions (not saved yet)")
+        if parsed_transactions:
+            # Classify for preview display
+            clf = TransactionClassifier()
+            classified = clf.classify_batch(parsed_transactions)
+            df = pd.DataFrame(classified)
+            st.dataframe(df, use_container_width=True, height=350)
+            st.info(f"Total parsed: {len(df)} | Amount: ₹{df['amount'].sum():,.2f}")
+        else:
+            st.warning("No transactions parsed from emails in this month.")
+
+        if monthly_summary:
+            st.write("Statement summary:")
+            st.json(monthly_summary)
+
+        # Reset/Commit section
+        st.divider()
+        colr1, colr2 = st.columns(2)
+        with colr1:
+            if st.button("♻️ Reset this month (delete + clear processed flags)"):
+                try:
+                    removed = db.delete_transactions_for_month(card, int(year), int(month))
+                    cleared = db.clear_processed_emails_for_month(card, int(year), int(month))
+                    st.success(f"Reset done. Deleted {removed} transactions, cleared {cleared} processed flags.")
+                except Exception as ex:
+                    st.error(f"Reset failed: {ex}")
+        with colr2:
+            if st.button("🧼 Clear processed flags only (reprocess emails)"):
+                try:
+                    cleared = db.clear_processed_emails_for_month(card, int(year), int(month))
+                    st.success(f"Cleared {cleared} processed flags for this month.")
+                except Exception as ex:
+                    st.error(f"Failed to clear flags: {ex}")
+
+        st.subheader("Commit this month to database")
+        verify_after = st.checkbox("Mark this month verified after save (recommended)", value=True)
+        if st.button("💾 Save month to DB"):
+            if not parsed_transactions:
+                st.error("Nothing to save.")
+            else:
+                # Write to DB
+                try:
+                    db.add_transactions_batch(classified)
+                    # Update monthly summary
+                    if monthly_summary:
+                        db.update_monthly_summary(
+                            card_name=card,
+                            month=int(month),
+                            year=int(year),
+                            total_spend=float(monthly_summary.get('total_spend', 0)),
+                            transaction_count=len(classified),
+                            due_date=due_date
+                        )
+                    # Mark verified
+                    if verify_after:
+                        from datetime import date
+                        start_str = datetime(int(year), int(month), 1).strftime('%Y-%m-%d')
+                        end_str = next_first.strftime('%Y-%m-%d')
+                        month_df = db.get_transactions(card_name=card, start_date=start_str, end_date=end_str)
+                        computed_total = float(month_df['amount'].sum()) if not month_df.empty else 0.0
+                        db.set_monthly_verification(card, int(month), int(year), computed_total, True, 0.0)
+                    st.success("Saved! You can now backfill history or preview another month.")
+                except Exception as ex:
+                    st.error(f"Failed to save: {ex}")
+
+    st.divider()
+    st.subheader("Step 3: Backfill history (2024+)")
+    st.write("After verifying one month works, run the full backfill once.")
+    colx, coly = st.columns(2)
+    with colx:
+        quick_mode = st.checkbox("Quick mode (limit 12 per card)", value=True)
+    with coly:
+        if st.button("🏁 Run backfill now"):
+            if not st.session_state.get('vf_email') or not st.session_state.get('vf_pass'):
+                st.error("Provide credentials above first.")
+            else:
+                with st.spinner("Running backfill... this may take time on first run"):
+                    from main import fetch_and_process_emails
+                    fetch_and_process_emails(
+                        st.session_state.get('vf_email'),
+                        st.session_state.get('vf_pass'),
+                        days_back=None,
+                        max_emails_per_card=(12 if quick_mode else None)
+                    )
 
 
 def show_overview(analyzer, reminder_system):

@@ -21,7 +21,8 @@ from src.config_loader import load_config
 
 
 
-def fetch_and_process_emails(email_address: str, email_password: str, days_back: int = None):
+def fetch_and_process_emails(email_address: str, email_password: str, days_back: int = None,
+                             max_emails_per_card: int = None):
     """Main function to fetch and process credit card emails.
     
     Args:
@@ -63,6 +64,12 @@ def fetch_and_process_emails(email_address: str, email_password: str, days_back:
         days_back = (today - start_date).days + 1  # From Jan 1, 2024 to today
         print(f"Fetching emails from January 1, 2024 onwards ({days_back} days)")
     
+    # Quick mode limit
+    if max_emails_per_card is None:
+        max_emails_per_card = config.get('email', {}).get('max_emails_per_card')
+    if max_emails_per_card:
+        print(f"Quick mode: limiting to last {max_emails_per_card} statement emails per card")
+
     # Process each bank configuration
     total_transactions = 0
     total_emails_processed = 0
@@ -101,7 +108,8 @@ def fetch_and_process_emails(email_address: str, email_password: str, days_back:
         emails = fetcher.search_emails(
             sender_pattern=sender_pattern,
             subject_keywords=subject_keywords,
-            days_back=days_back
+            days_back=days_back,
+            max_fetch=max_emails_per_card
         )
         search_time = time.time() - search_start
         print(f" Done ({search_time:.1f}s)")
@@ -123,6 +131,16 @@ def fetch_and_process_emails(email_address: str, email_password: str, days_back:
         else:
             print(f"  ✓ Found {len(emails)} emails")
         
+        # Ensure newest-first processing
+        try:
+            emails = sorted(
+                emails,
+                key=lambda e: e.get('date'),
+                reverse=True
+            )
+        except Exception:
+            pass
+
         # Parse each email
         parser = EmailParser(card_name, pdf_password=pdf_password)
         transactions_added = 0

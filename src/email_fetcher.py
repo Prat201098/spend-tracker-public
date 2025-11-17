@@ -114,15 +114,19 @@ class EmailFetcher:
                         
                         subject = self._decode_header(email_message['Subject'])
                         subject_lower = subject.lower()
+                        # Normalize whitespace to handle non-breaking spaces / multiple spaces
+                        subject_norm = re.sub(r"\s+", " ", subject_lower).strip()
                         from_addr = self._decode_header(email_message['From']).lower()
                         
-                        # Check if subject matches exact pattern first (if provided)
+                        # Check if subject matches configured keywords
                         matches_subject = True
                         if subject_keywords:
-                            # Check for exact pattern match (if available in config)
-                            # This will be checked in main.py, but for now use keywords
+                            norm_keywords = [
+                                re.sub(r"\s+", " ", kw.lower()).strip()
+                                for kw in subject_keywords
+                            ]
                             matches_subject = any(
-                                kw.lower() in subject_lower for kw in subject_keywords
+                                kw in subject_norm for kw in norm_keywords
                             )
                         
                         # Check if sender matches pattern

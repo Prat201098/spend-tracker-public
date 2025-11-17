@@ -27,6 +27,8 @@ from src.email_parser import EmailParser
 from src.transaction_classifier import TransactionClassifier
 
 
+APP_DEBUG_TAG = "debug-verify-2025-11-18-0355"
+
 # Page configuration
 st.set_page_config(
     page_title="Prat Spend Analyzer",
@@ -56,6 +58,7 @@ def get_reminder_system():
 
 def main():
     st.title("💰 Prat Spend Analyzer")
+    st.caption(f"Debug code tag: {APP_DEBUG_TAG}")
     
     db = get_database()
     analyzer = get_analyzer()

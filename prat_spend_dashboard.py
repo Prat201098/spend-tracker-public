@@ -290,16 +290,45 @@ def show_verify_backfill():
         parsed_transactions = []
         monthly_summary = None
         due_date = None
+
+        emails_with_txns = 0
+        emails_without_txns = 0
+        parse_errors = []
+
         for e in emails:
-            pdata = parser.parse_email(e)
-            if pdata.get('transactions'):
-                parsed_transactions.extend(pdata['transactions'])
+            try:
+                pdata = parser.parse_email(e)
+            except Exception as ex:
+                # Capture error details per email so the user can see why parsing failed
+                parse_errors.append({
+                    "subject": e.get("subject"),
+                    "error": str(ex)
+                })
+                continue
+
+            txns = pdata.get('transactions') or []
+            if txns:
+                parsed_transactions.extend(txns)
+                emails_with_txns += 1
+            else:
+                emails_without_txns += 1
+
             if not monthly_summary and pdata.get('monthly_summary'):
                 monthly_summary = pdata['monthly_summary']
             if not due_date and pdata.get('due_date'):
                 due_date = pdata['due_date']
 
         st.subheader("Preview Transactions (not saved yet)")
+        st.caption(
+            f"Debug: emails fetched={len(emails)}, with transactions={emails_with_txns}, "
+            f"without transactions={emails_without_txns}, parse errors={len(parse_errors)}"
+        )
+        if parse_errors:
+            with st.expander("Show parsing errors (for debugging)"):
+                for err in parse_errors:
+                    st.write(f"Subject: {err.get('subject')}")
+                    st.code(err.get('error'))
+
         if parsed_transactions:
             # Classify for preview display
             clf = TransactionClassifier()

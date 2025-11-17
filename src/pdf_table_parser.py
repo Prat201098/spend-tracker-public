@@ -154,21 +154,24 @@ class PDFTableParser:
 
             date_str = date_match.group(1)
 
-            # Look for amount (usually at end or after description)
-            amount_match = re.search(r'([\d,]+\.?\d{0,2})', line)
-            if not amount_match:
+            # Look for amount (usually at end or after description). Use the LAST
+            # numeric token on the line to avoid picking reference numbers.
+            amount_matches = re.findall(r'([\d,]+\.?\d{0,2})', line)
+            if not amount_matches:
                 i += 1
                 continue
 
-            # Extract description (between date and amount)
+            amount_str = amount_matches[-1]
+
+            # Extract description (between date and chosen amount)
             date_end = date_match.end()
-            amount_start = amount_match.start()
+            amount_start = line.rfind(amount_str)
             description = line[date_end:amount_start].strip('| ').strip()
 
             if description and len(description) > 3:
                 try:
                     date = self._parse_date(date_str)
-                    amount = self._parse_amount(amount_match.group(1))
+                    amount = self._parse_amount(amount_str)
 
                     if date and amount is not None:
                         transactions.append({
@@ -271,8 +274,9 @@ class PDFTableParser:
         is_negative = s_clean.startswith('-') or s_clean.startswith('(') or is_credit
         s_clean = s_clean.replace('(', '').replace(')', '').replace('-', '')
 
-        # Strip trailing credit/debit markers
+        # Strip trailing credit/debit markers and any remaining letters
         s_clean = s_clean.replace('cr', '').replace('dr', '')
+        s_clean = re.sub(r'[a-z]', '', s_clean)
 
         try:
             amount = float(s_clean)

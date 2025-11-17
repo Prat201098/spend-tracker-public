@@ -195,45 +195,38 @@ class EmailParser:
             # Try advanced table parsing first
             table_parser = PDFTableParser()
             transactions = table_parser.parse_pdf_tables(pdf)
-            
-            # If table parsing didn't work, fall back to text parsing
-            if not transactions:
-                text = ""
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
 
-                # Expose raw text for debugging in the dashboard (truncated)
-                if text:
-                    result["raw_text"] = text[:8000]
-
-                if text.strip():
-                    # Parse transactions from PDF text
-                    transactions = self._parse_from_body(text)
-
-                    # Also try table parser on text
-                    if not transactions:
-                        transactions = table_parser._parse_text_table(text)
-            
-            if transactions:
-                result['transactions'] = transactions
-            
-            # Extract summary and due date from text
+            # Build full text once for fallback parsing and summary/due date
             text = ""
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
-            
+
+            # Expose raw text for debugging in the dashboard (truncated)
+            if text:
+                result["raw_text"] = text[:8000]
+
+            # If table parsing didn't work, fall back to text parsing
+            if not transactions and text.strip():
+                # Parse transactions from PDF text
+                transactions = self._parse_from_body(text)
+
+                # Also try table parser on text
+                if not transactions:
+                    transactions = table_parser._parse_text_table(text)
+
+            if transactions:
+                result['transactions'] = transactions
+
             pdf.close()
-            
+
             if text.strip():
                 # Extract summary
                 summary = self._extract_monthly_summary(text)
                 if summary:
                     result['monthly_summary'] = summary
-                
+
                 # Extract due date
                 due_date = self._extract_due_date(text)
                 if due_date:

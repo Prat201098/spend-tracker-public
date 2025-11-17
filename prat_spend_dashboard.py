@@ -4,8 +4,12 @@ Streamlit Dashboard for Spend Tracker
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except Exception:
+    PLOTLY_AVAILABLE = False
 from datetime import datetime, timedelta
 import sys
 from pathlib import Path
@@ -178,15 +182,19 @@ def show_overview(analyzer, reminder_system):
     trends = analyzer.get_monthly_trends(months=12)
     
     if not trends.empty:
-        fig = px.line(
-            trends, 
-            x='period', 
-            y='total_spend',
-            markers=True,
-            title="Spending Over Time"
-        )
-        fig.update_layout(xaxis_title="Month", yaxis_title="Total Spend (₹)")
-        st.plotly_chart(fig, use_container_width=True)
+        if PLOTLY_AVAILABLE:
+            fig = px.line(
+                trends, 
+                x='period', 
+                y='total_spend',
+                markers=True,
+                title="Spending Over Time"
+            )
+            fig.update_layout(xaxis_title="Month", yaxis_title="Total Spend (₹)")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Plotly charts are disabled (package not available). Showing table instead.")
+            st.dataframe(trends, use_container_width=True)
     else:
         st.info("No spending data available yet. Fetch emails to get started!")
     
@@ -198,14 +206,18 @@ def show_overview(analyzer, reminder_system):
         col1, col2 = st.columns(2)
         
         with col1:
-            fig = px.bar(
-                card_spend,
-                x='card_name',
-                y='total_amount',
-                title="Total Spend by Card"
-            )
-            fig.update_layout(xaxis_title="Card", yaxis_title="Amount (₹)")
-            st.plotly_chart(fig, use_container_width=True)
+            if PLOTLY_AVAILABLE:
+                fig = px.bar(
+                    card_spend,
+                    x='card_name',
+                    y='total_amount',
+                    title="Total Spend by Card"
+                )
+                fig.update_layout(xaxis_title="Card", yaxis_title="Amount (₹)")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Plotly not available; showing table instead.")
+                st.dataframe(card_spend, use_container_width=True)
         
         with col2:
             st.dataframe(card_spend, use_container_width=True)
@@ -242,9 +254,12 @@ def show_monthly_analysis(analyzer):
         if cards:
             st.subheader("Spending by Card")
             cards_df = pd.DataFrame(list(cards.items()), columns=['Card', 'Amount'])
-            fig = px.pie(cards_df, values='Amount', names='Card', 
-                        title=f"Spending Distribution - {selected_month}/{selected_year}")
-            st.plotly_chart(fig, use_container_width=True)
+            if PLOTLY_AVAILABLE:
+                fig = px.pie(cards_df, values='Amount', names='Card', 
+                            title=f"Spending Distribution - {selected_month}/{selected_year}")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.dataframe(cards_df, use_container_width=True)
     else:
         st.info(f"No data available for {selected_month}/{selected_year}")
 
@@ -253,6 +268,10 @@ def show_enhanced_analysis(analyzer, db):
     """Enhanced analysis page with advanced charts and time filters."""
     st.header("📊 Enhanced Analysis")
     st.write("Advanced spending analysis with interactive charts and time filters.")
+    if not PLOTLY_AVAILABLE:
+        st.warning("Plotly is not available in this environment. Charts are disabled.")
+        st.info("You can still use Fetch Emails and other non-chart features.")
+        return
     
     # Time filter
     st.subheader("⏱ Time Period")
@@ -420,6 +439,10 @@ def show_enhanced_analysis(analyzer, db):
 
 def show_spending_breakdown(analyzer):
     st.header("💸 Spending Breakdown")
+    if not PLOTLY_AVAILABLE:
+        st.warning("Plotly is not available in this environment. Charts are disabled.")
+        st.info("You can still filter and view tables in other pages.")
+        # Continue to allow table views below without charts
     
     # Date range selector
     col1, col2 = st.columns(2)
@@ -439,9 +462,12 @@ def show_spending_breakdown(analyzer):
     if not category_spend.empty:
         col1, col2 = st.columns(2)
         with col1:
-            fig = px.pie(category_spend, values='total_amount', names='category',
-                        title="Spending by Category")
-            st.plotly_chart(fig, use_container_width=True)
+            if PLOTLY_AVAILABLE:
+                fig = px.pie(category_spend, values='total_amount', names='category',
+                            title="Spending by Category")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.dataframe(category_spend, use_container_width=True)
         with col2:
             st.dataframe(category_spend, use_container_width=True)
     else:
@@ -458,11 +484,14 @@ def show_spending_breakdown(analyzer):
     )
     
     if not top_merchants.empty:
-        fig = px.bar(top_merchants, x='merchant', y='total_amount',
-                    title="Top 10 Merchants by Spending")
-        fig.update_layout(xaxis_title="Merchant", yaxis_title="Amount (₹)")
-        fig.update_xaxes(tickangle=-45)
-        st.plotly_chart(fig, use_container_width=True)
+        if PLOTLY_AVAILABLE:
+            fig = px.bar(top_merchants, x='merchant', y='total_amount',
+                        title="Top 10 Merchants by Spending")
+            fig.update_layout(xaxis_title="Merchant", yaxis_title="Amount (₹)")
+            fig.update_xaxes(tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.dataframe(top_merchants, use_container_width=True)
         st.dataframe(top_merchants, use_container_width=True)
     else:
         st.info("No merchant data available.")
@@ -730,13 +759,16 @@ def show_cost_analyzer(db):
         with col1:
             # Pie chart
             category_totals = breakdown.groupby('Category')['Amount'].sum().reset_index()
-            fig = px.pie(
-                category_totals,
-                values='Amount',
-                names='Category',
-                title=f"Total Expenses by Category - {selected_month}/{selected_year}"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if PLOTLY_AVAILABLE:
+                fig = px.pie(
+                    category_totals,
+                    values='Amount',
+                    names='Category',
+                    title=f"Total Expenses by Category - {selected_month}/{selected_year}"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.dataframe(category_totals, use_container_width=True)
         
         with col2:
             # Breakdown table

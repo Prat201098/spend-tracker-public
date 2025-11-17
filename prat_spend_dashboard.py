@@ -224,9 +224,19 @@ def show_verify_backfill():
 
     # Selection
     with st.expander("Step 2: Select card & month", expanded=True):
-        bank_configs = config.get('email', {}).get('bank_emails', [])
-        cards = [b.get('card_name') for b in bank_configs]
-        card = st.selectbox("Card", cards)
+        bank_configs = config.get('email', {}).get('bank_emails', []) or []
+        cards = [b.get('card_name') for b in bank_configs if b.get('card_name')]
+        # Fallback: if no cards in config, try from DB
+        if not cards:
+            try:
+                tx = db.get_transactions()
+                if not tx.empty and 'card_name' in tx.columns:
+                    cards = sorted([c for c in tx['card_name'].dropna().unique().tolist() if c])
+            except Exception:
+                pass
+        if not cards:
+            st.info("No cards configured yet. Add 'email.bank_emails' in config.yaml at repo root to enable selection.")
+        card = st.selectbox("Card", cards, disabled=(len(cards) == 0))
         col1, col2 = st.columns(2)
         with col1:
             year = st.number_input("Year", min_value=2024, max_value=datetime.now().year, value=datetime.now().year)

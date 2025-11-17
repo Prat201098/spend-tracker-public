@@ -1,0 +1,28 @@
+# Global configuration for Spend Tracker app
+
+database:
+  path: data/spend_tracker.db
+
+email:
+  imap_server: imap.gmail.com
+  imap_port: 993
+  use_ssl: true
+  # Limit how many recent statement emails to fetch per card in quick mode/backfill
+  max_emails_per_card: 12
+
+  # Configure your cards here. Replace samples with your banks.
+  # Tip: Keep pdf_password null here; set it securely via Streamlit Secrets on Cloud
+  bank_emails:
+    - card_name: AMEX
+      sender_pattern: "@americanexpress.com"
+      subject_keywords:
+        - "american express statement"
+        - "your american express statement"
+      pdf_password: null
+
+    - card_name: HDFC
+      sender_pattern: "@hdfcbank.net"
+      subject_keywords:
+        - "credit card statement"
+        - "card ending"
+      pdf_password: null

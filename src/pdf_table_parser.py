@@ -168,6 +168,16 @@ class PDFTableParser:
             amount_start = line.rfind(amount_str)
             description = line[date_end:amount_start].strip('| ').strip()
 
+            # Normalize description for HDFC-style lines:
+            # - Remove leading time fragments like '14:50'
+            # - Remove trailing '+ C' or standalone 'C'
+            # - Collapse multiple spaces
+            # Remove leading time (HH:MM) if present
+            description = re.sub(r'^\d{1,2}:\d{2}\s*', '', description)
+            # Remove trailing credit markers like '+ C' or 'C'
+            description = re.sub(r'\+?\s*C\s*$', '', description, flags=re.IGNORECASE)
+            description = re.sub(r'\s+', ' ', description).strip()
+
             if description and len(description) > 3:
                 try:
                     date = self._parse_date(date_str)

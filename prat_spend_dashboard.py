@@ -279,12 +279,13 @@ def show_verify_backfill():
                 return
 
             # Primary search: use configured sender + subject filters
+            # For preview, scan the full month (no max_fetch limit)
             emails = ef.search_emails(
                 sender_pattern=bcfg.get('sender_pattern'),
                 subject_keywords=bcfg.get('subject_keywords'),
                 start_date=first,
                 end_date=last,
-                max_fetch=24
+                max_fetch=None
             )
 
             # Fallback debug search: date-only, no sender/subject filter
@@ -295,7 +296,7 @@ def show_verify_backfill():
                     subject_keywords=None,
                     start_date=first,
                     end_date=last,
-                    max_fetch=200
+                    max_fetch=None
                 )
 
             ef.disconnect()

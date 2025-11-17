@@ -326,6 +326,7 @@ def show_verify_backfill():
         emails_with_txns = 0
         emails_without_txns = 0
         parse_errors = []
+        raw_text_snippets = []
 
         for e in emails:
             try:
@@ -345,6 +346,13 @@ def show_verify_backfill():
             else:
                 emails_without_txns += 1
 
+            # Capture raw PDF text snippet if available for debug
+            if pdata.get('raw_text'):
+                raw_text_snippets.append({
+                    'subject': e.get('subject'),
+                    'raw_text': pdata['raw_text']
+                })
+
             if not monthly_summary and pdata.get('monthly_summary'):
                 monthly_summary = pdata['monthly_summary']
             if not due_date and pdata.get('due_date'):
@@ -360,6 +368,12 @@ def show_verify_backfill():
                 for err in parse_errors:
                     st.write(f"Subject: {err.get('subject')}")
                     st.code(err.get('error'))
+
+        if not parsed_transactions and raw_text_snippets:
+            with st.expander("Debug: raw PDF text (first 8000 chars)"):
+                for snip in raw_text_snippets:
+                    st.write(f"Subject: {snip['subject']}")
+                    st.code(snip['raw_text'])
 
         if parsed_transactions:
             # Classify for preview display

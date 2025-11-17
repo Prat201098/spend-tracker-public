@@ -203,11 +203,15 @@ class EmailParser:
                     page_text = page.extract_text()
                     if page_text:
                         text += page_text + "\n"
-                
+
+                # Expose raw text for debugging in the dashboard (truncated)
+                if text:
+                    result["raw_text"] = text[:8000]
+
                 if text.strip():
                     # Parse transactions from PDF text
                     transactions = self._parse_from_body(text)
-                    
+
                     # Also try table parser on text
                     if not transactions:
                         transactions = table_parser._parse_text_table(text)

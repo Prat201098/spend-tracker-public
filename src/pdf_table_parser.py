@@ -154,18 +154,32 @@ class PDFTableParser:
 
             date_str = date_match.group(1)
 
-            # Look for amount (usually at end or after description). Use the LAST
-            # numeric token on the line to avoid picking reference numbers.
-            amount_matches = re.findall(r'([\d,]+\.?\d{0,2})', line)
-            if not amount_matches:
+            # Look for amount (usually at end or after description).
+            # We want the LAST *reasonable* currency token, not huge reference numbers.
+            amount_iter = list(re.finditer(r'([\d,]+\.?\d{0,2})', line))
+            if not amount_iter:
                 i += 1
                 continue
 
-            amount_str = amount_matches[-1]
+            candidates = []
+            for m in amount_iter:
+                token = m.group(1)
+                digits_only = re.sub(r'\D', '', token)
+                if not digits_only:
+                    continue
+                # Skip obviously huge reference numbers (e.g. 18+ digit auth codes)
+                if len(digits_only) > 9:
+                    continue
+                candidates.append((m.start(1), token))
+
+            if not candidates:
+                i += 1
+                continue
+
+            amount_start, amount_str = candidates[-1]
 
             # Extract description (between date and chosen amount)
             date_end = date_match.end()
-            amount_start = line.rfind(amount_str)
             description = line[date_end:amount_start].strip('| ').strip()
 
             # Normalize description for HDFC-style lines:
@@ -279,6 +293,14 @@ class PDFTableParser:
         # Remove currency symbols, commas, spaces and common prefixes
         s_clean = re.sub(r'[₹$€£,\s]', '', s_lower)
         s_clean = re.sub(r'(rs\.?|inr)', '', s_clean)
+
+        # If this still has an absurd number of digits (e.g. reference numbers), skip it
+        digits_only = re.sub(r'\D', '', s_clean)
+        if not digits_only:
+            return None
+        if len(digits_only) > 9:
+            # More than 9 digits (₹>999,999,999) is unrealistic for a single card txn
+            return None
 
         # Handle parentheses and leading minus
         is_negative = s_clean.startswith('-') or s_clean.startswith('(') or is_credit

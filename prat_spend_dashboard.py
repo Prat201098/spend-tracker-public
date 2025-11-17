@@ -274,6 +274,8 @@ def show_verify_backfill():
             if not ef.connect(email_address, email_password):
                 st.error("Failed to connect to email.")
                 return
+
+            # Primary search: use configured sender + subject filters
             emails = ef.search_emails(
                 sender_pattern=bcfg.get('sender_pattern'),
                 subject_keywords=bcfg.get('subject_keywords'),
@@ -281,11 +283,23 @@ def show_verify_backfill():
                 end_date=last,
                 max_fetch=24
             )
+
+            # Fallback debug search: date-only, no sender/subject filter
+            fallback_emails = []
+            if not emails:
+                fallback_emails = ef.search_emails(
+                    sender_pattern=None,
+                    subject_keywords=None,
+                    start_date=first,
+                    end_date=last,
+                    max_fetch=200
+                )
+
             ef.disconnect()
 
         st.info(f"Found {len(emails)} emails for {card} in {month}/{year}.")
 
-        # Debug: show raw emails and attachments
+        # Debug: show raw emails and attachments for matched emails
         if emails:
             with st.expander("Debug: emails & attachments"):
                 for idx, e in enumerate(emails, start=1):
@@ -295,6 +309,12 @@ def show_verify_backfill():
                         st.write("   Attachments:", [a.get('filename') for a in atts])
                     else:
                         st.write("   Attachments: none")
+
+        # Debug: show fallback emails when primary search found none
+        if not emails and fallback_emails:
+            with st.expander("Debug: fallback emails (date-only search)"):
+                for e in fallback_emails:
+                    st.write(f"{e.get('date')} | {e.get('from')} | {e.get('subject')}")
         st.caption(f"Debug: pdf_password configured = {'yes' if bcfg.get('pdf_password') else 'no'}")
 
         # Parse emails (no DB write)

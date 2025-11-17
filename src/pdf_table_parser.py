@@ -130,35 +130,46 @@ class PDFTableParser:
     def _parse_text_table(self, text: str) -> List[Dict]:
         """Parse transactions from unstructured text."""
         transactions = []
-        lines = text.split('\n')
-        
-        for line in lines:
-            line = line.strip()
+        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+
+        # Many bank PDFs (like HDFC Marriott) split a single transaction over
+        # multiple lines: one line for date/time, one for description, one for amount.
+        # To handle that, look at a sliding window of a few lines combined.
+        n = len(lines)
+        i = 0
+        while i < n:
+            # Combine up to 4 consecutive lines into one logical line
+            window_lines = lines[i:i+4]
+            line = ' '.join(window_lines)
+
             if len(line) < 10:
+                i += 1
                 continue
-            
+
             # Look for date pattern
             date_match = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})', line)
             if not date_match:
+                i += 1
                 continue
-            
+
             date_str = date_match.group(1)
-            
+
             # Look for amount (usually at end or after description)
             amount_match = re.search(r'([\d,]+\.?\d{0,2})', line)
             if not amount_match:
+                i += 1
                 continue
-            
+
             # Extract description (between date and amount)
             date_end = date_match.end()
             amount_start = amount_match.start()
-            description = line[date_end:amount_start].strip()
-            
+            description = line[date_end:amount_start].strip('| ').strip()
+
             if description and len(description) > 3:
                 try:
                     date = self._parse_date(date_str)
                     amount = self._parse_amount(amount_match.group(1))
-                    
+
                     if date and amount is not None:
                         transactions.append({
                             'transaction_date': date.strftime('%Y-%m-%d'),
@@ -166,8 +177,13 @@ class PDFTableParser:
                             'amount': amount,
                             'merchant': description[:50]
                         })
-                except:
-                    continue
+                        # Skip past the lines we just consumed for this transaction
+                        i += len(window_lines)
+                        continue
+                except Exception:
+                    pass
+
+            i += 1
         
         return transactions
     
@@ -222,7 +238,8 @@ class PDFTableParser:
         date_formats = [
             '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
             '%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d',
-            '%d %b %Y', '%d %B %Y', '%d-%b-%Y', '%d-%B-%Y'
+            '%d %b %Y', '%d %b %y', '%d %B %Y', '%d %B %y',
+            '%d-%b-%Y', '%d-%b-%y', '%d-%B-%Y', '%d-%B-%y'
         ]
         
         date_str = date_str.strip()

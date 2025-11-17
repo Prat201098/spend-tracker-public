@@ -31,7 +31,18 @@ class EmailFetcher:
                 self.connection = imaplib.IMAP4(self.imap_server, self.imap_port)
             
             self.connection.login(email_address, password)
-            self.connection.select('INBOX')
+            # For Gmail, select 'All Mail' so archived statements are also visible
+            try:
+                if 'gmail' in self.imap_server.lower():
+                    self.connection.select('[Gmail]/All Mail')
+                else:
+                    self.connection.select('INBOX')
+            except Exception:
+                # Fallback to INBOX if special folder selection fails
+                try:
+                    self.connection.select('INBOX')
+                except Exception:
+                    pass
             return True
         except Exception as e:
             print(f"Error connecting to email: {e}")

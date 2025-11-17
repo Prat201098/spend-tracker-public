@@ -285,6 +285,18 @@ def show_verify_backfill():
 
         st.info(f"Found {len(emails)} emails for {card} in {month}/{year}.")
 
+        # Debug: show raw emails and attachments
+        if emails:
+            with st.expander("Debug: emails & attachments"):
+                for idx, e in enumerate(emails, start=1):
+                    st.write(f"{idx}. {e.get('subject')} ({e.get('date')})")
+                    atts = e.get('attachments') or []
+                    if atts:
+                        st.write("   Attachments:", [a.get('filename') for a in atts])
+                    else:
+                        st.write("   Attachments: none")
+        st.caption(f"Debug: pdf_password configured = {'yes' if bcfg.get('pdf_password') else 'no'}")
+
         # Parse emails (no DB write)
         parser = EmailParser(card, pdf_password=bcfg.get('pdf_password'))
         parsed_transactions = []
@@ -338,6 +350,8 @@ def show_verify_backfill():
             st.info(f"Total parsed: {len(df)} | Amount: ₹{df['amount'].sum():,.2f}")
         else:
             st.warning("No transactions parsed from emails in this month.")
+            if monthly_summary:
+                st.info("Debug: Statement summary was detected but no transaction rows matched current parsing patterns.")
 
         if monthly_summary:
             st.write("Statement summary:")

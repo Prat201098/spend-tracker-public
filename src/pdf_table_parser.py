@@ -239,17 +239,27 @@ class PDFTableParser:
         """Parse amount string to float."""
         if not amount_str:
             return None
-        
-        # Remove currency symbols and spaces
-        amount_str = re.sub(r'[₹$€£,\s]', '', str(amount_str))
-        
-        # Handle negative amounts
-        is_negative = amount_str.startswith('-') or amount_str.startswith('(')
-        amount_str = amount_str.replace('(', '').replace(')', '').replace('-', '')
-        
+
+        s = str(amount_str).strip()
+        s_lower = s.lower()
+
+        # Detect credits (CR) as negative amounts for card statements
+        is_credit = bool(re.search(r"cr\b", s_lower))
+
+        # Remove currency symbols, commas, spaces and common prefixes
+        s_clean = re.sub(r'[₹$€£,\s]', '', s_lower)
+        s_clean = re.sub(r'(rs\.?|inr)', '', s_clean)
+
+        # Handle parentheses and leading minus
+        is_negative = s_clean.startswith('-') or s_clean.startswith('(') or is_credit
+        s_clean = s_clean.replace('(', '').replace(')', '').replace('-', '')
+
+        # Strip trailing credit/debit markers
+        s_clean = s_clean.replace('cr', '').replace('dr', '')
+
         try:
-            amount = float(amount_str)
+            amount = float(s_clean)
             return -amount if is_negative else amount
-        except:
+        except Exception:
             return None
 

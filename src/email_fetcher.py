@@ -80,36 +80,43 @@ class EmailFetcher:
         
         try:
             # Build search criteria - use simpler IMAP syntax
-            search_criteria = []
-            
-            # Date filter
-            if start_date:
-                since_str = start_date.strftime("%d-%b-%Y")
-            else:
-                since_str = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-            search_criteria.append(f'SINCE {since_str}')
+            def _build_criteria(include_sender: bool = True):
+                criteria = []
+                # Date filter
+                if start_date:
+                    since = start_date
+                else:
+                    since = (datetime.now() - timedelta(days=days_back)).date()
+                since_str = since.strftime("%d-%b-%Y")
+                criteria.append(f'SINCE {since_str}')
 
-            if end_date:
-                before_str = (end_date + timedelta(days=1)).strftime("%d-%b-%Y")
-                search_criteria.append(f'BEFORE {before_str}')
-            
-            # Sender filter - IMAP FROM expects the domain part
-            if sender_pattern:
-                # Remove @ symbol for IMAP search
-                domain = sender_pattern.lstrip('@')
-                search_criteria.append(f'FROM {domain}')
-            
-            # Build search query - IMAP uses space-separated criteria
+                if end_date:
+                    before_str = (end_date + timedelta(days=1)).strftime("%d-%b-%Y")
+                    criteria.append(f'BEFORE {before_str}')
+
+                # Sender filter - IMAP FROM expects the domain part
+                if include_sender and sender_pattern:
+                    domain = sender_pattern.lstrip('@')
+                    criteria.append(f'FROM {domain}')
+                return criteria
+
+            # First try with sender filter (if provided)
+            search_criteria = _build_criteria(include_sender=True)
             search_query = ' '.join(search_criteria)
-            
-            # Search for emails by sender and date
             status, messages = self.connection.search(None, search_query)
-            
             if status != 'OK':
                 print(f"IMAP search failed: {messages}")
                 return []
-            
+
             email_ids = messages[0].split()
+
+            # Fallback: if nothing found and we had a sender_pattern, retry with date-only criteria
+            if sender_pattern and not email_ids:
+                fb_criteria = _build_criteria(include_sender=False)
+                fb_query = ' '.join(fb_criteria)
+                status_fb, messages_fb = self.connection.search(None, fb_query)
+                if status_fb == 'OK':
+                    email_ids = messages_fb[0].split()
             # Limit to the most recent N IDs to speed up processing, if requested
             if max_fetch and len(email_ids) > max_fetch:
                 email_ids = email_ids[-max_fetch:]

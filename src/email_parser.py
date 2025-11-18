@@ -103,12 +103,39 @@ class EmailParser:
     
     def _extract_monthly_summary(self, body_text: str) -> Optional[Dict]:
         """Extract monthly total spend from email body."""
-        # Look for patterns like "Total: Rs. 12,345.67" or "Amount Due: $1,234.56"
+        name = (self.card_name or "").upper()
+
+        # Card-specific: HDFC credit cards
+        if "HDFC" in name:
+            summary = self._extract_hdfc_email_summary(body_text)
+            if summary:
+                return summary
+
+        # Card-specific: Axis credit cards
+        if "AXIS" in name:
+            summary = self._extract_axis_email_summary(body_text)
+            if summary:
+                return summary
+
+        # Card-specific: SBI credit cards
+        if "SBI" in name:
+            summary = self._extract_sbi_email_summary(body_text)
+            if summary:
+                return summary
+
+        # Card-specific: YES Bank credit cards
+        if "YES" in name:
+            summary = self._extract_yes_email_summary(body_text)
+            if summary:
+                return summary
+
+        # Generic fallback: Look for patterns like
+        # "Total: Rs. 12,345.67" or "Amount Due: $1,234.56"
         patterns = [
             r'(?:total|amount due|outstanding|balance)[:\s]+(?:rs\.?|inr|usd|\$)?\s*([\d,]+\.?\d*)',
             r'([\d,]+\.?\d*)\s*(?:total|amount due|outstanding)',
         ]
-        
+
         for pattern in patterns:
             match = re.search(pattern, body_text, re.IGNORECASE)
             if match:
@@ -117,11 +144,59 @@ class EmailParser:
                     return {'total_spend': float(amount_str)}
                 except:
                     pass
-        
+
         return None
     
     def _extract_due_date(self, body_text: str) -> Optional[str]:
         """Extract payment due date from email body."""
+        name = (self.card_name or "").upper()
+
+        compact = re.sub(r'\s+', ' ', body_text)
+
+        # HDFC email structure:
+        # "Total Amount Due  ... minimum amount due ... payment due date (DD-MM-YYYY)  ₹13.00  ₹13.00  03-12-2025"
+        if "HDFC" in name:
+            m = re.search(r'Total Amount Due.*?(\d{2}-\d{2}-\d{4})', compact, re.IGNORECASE)
+            if m:
+                try:
+                    date = self._parse_date(m.group(1))
+                    return date.strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+
+        # Axis email structure:
+        # "Total Amount Due INR  Minimum Amount Due (INR)  Payment Due Date (DD-MM-YYYY)  3690.15 Cr  0 Cr  08/07/2025"
+        if "AXIS" in name:
+            m = re.search(r'Total Amount Due\s+INR.*?Payment Due Date\s*\(DD-MM-YYYY\)\s+[\d,\.]+\s+Cr\s+[\d,\.]+\s+Cr\s+(\d{2}/\d{2}/\d{4})', compact, re.IGNORECASE)
+            if m:
+                try:
+                    date = self._parse_date(m.group(1))
+                    return date.strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+
+        # SBI email structure:
+        # "Total amount due ()  1,16,870.00  Minimum amount due ()  2,391.00  Payment due date  07-Nov-2025"
+        if "SBI" in name:
+            m = re.search(r'Payment due date\s+(\d{1,2}-[A-Za-z]{3}-\d{4})', compact, re.IGNORECASE)
+            if m:
+                try:
+                    date = self._parse_date(m.group(1))
+                    return date.strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+
+        # YES Bank email structure:
+        # "Payment Due Date  04/07/2025"
+        if "YES" in name:
+            m = re.search(r'Payment Due Date[:\s]+(\d{2}/\d{2}/\d{4})', compact, re.IGNORECASE)
+            if m:
+                try:
+                    date = self._parse_date(m.group(1))
+                    return date.strftime('%Y-%m-%d')
+                except Exception:
+                    pass
+
         patterns = [
             r'due date[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
             r'pay by[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
@@ -192,11 +267,8 @@ class EmailParser:
                     print(f"Error opening PDF (may be password protected): {e}")
                     return result
             
-            # Try advanced table parsing first
-            table_parser = PDFTableParser()
-            transactions = table_parser.parse_pdf_tables(pdf)
-
-            # Build full text once for fallback parsing and summary/due date
+            # Build full text once for card-specific parsing, fallback parsing,
+            # and summary/due date extraction.
             text = ""
             for page in pdf.pages:
                 page_text = page.extract_text()
@@ -207,12 +279,41 @@ class EmailParser:
             if text:
                 result["raw_text"] = text[:8000]
 
-            # If table parsing didn't work, fall back to text parsing
+            table_parser = PDFTableParser()
+            transactions = []
+
+            # Card-specific parsing: HDFC Marriott/Millennia statements often
+            # have transactions in a text table under "Domestic Transactions".
+            if self._is_hdfc_marriott() and text.strip():
+                transactions = self._parse_hdfc_marriott(text, table_parser)
+
+            # Card-specific parsing: Axis Bank credit cards use an "Account
+            # Summary" section listing transactions.
+            if not transactions and self._is_axis_card() and text.strip():
+                transactions = self._parse_axis_statement(text, table_parser)
+
+            # Card-specific parsing: SBI Card (e.g. Vistara) uses a
+            # "TRANSACTIONS FOR <NAME>" section for itemized spends.
+            if not transactions and self._is_sbi_card() and text.strip():
+                transactions = self._parse_sbi_statement(text, table_parser)
+
+            # Card-specific parsing: YES Bank credit cards use a table between
+            # "Date Transaction Details Merchant Category Amount (Rs.)" and
+            # the "End of the Statement" marker.
+            if not transactions and self._is_yes_card() and text.strip():
+                transactions = self._parse_yes_statement(text, table_parser)
+
+            # If no card-specific parser matched or returned data, try
+            # advanced table parsing on the PDF itself.
+            if not transactions:
+                transactions = table_parser.parse_pdf_tables(pdf)
+
+            # Generic fallbacks using the extracted text
             if not transactions and text.strip():
                 # Parse transactions from PDF text
                 transactions = self._parse_from_body(text)
 
-                # Also try table parser on text
+                # Also try table parser on plain text
                 if not transactions:
                     transactions = table_parser._parse_text_table(text)
 
@@ -244,7 +345,7 @@ class EmailParser:
         date_formats = [
             '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
             '%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d', '%d %b %Y',
-            '%d %B %Y'
+            '%d %B %Y', '%d-%b-%Y', '%d-%b-%y'
         ]
         
         for fmt in date_formats:
@@ -268,5 +369,442 @@ class EmailParser:
             val = float(s)
             return -val if is_negative else val
         except:
+            return None
+
+    def _is_hdfc_marriott(self) -> bool:
+        """Return True if this parser is for an HDFC statement using the Marriott/Millennia layout."""
+        name = (self.card_name or "").upper()
+        return "HDFC" in name and ("MARRIOTT" in name or "MILLENNIA" in name)
+
+    def _parse_hdfc_marriott(self, text: str, table_parser: PDFTableParser) -> List[Dict]:
+        """Parse HDFC Marriott/Millennia statements from PDF text.
+
+        These statements list transactions in a text table under headings like
+        "Domestic Transactions". We isolate that section and then let the
+        generic PDFTableParser text parser extract rows. Finally, we drop
+        previous-statement payment rows ("BPPY CC PAYMENT ...") and treat
+        refunds as credits (negative amounts).
+        """
+        if not text:
+            return []
+
+        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+        if not lines:
+            return []
+
+        # Locate the "Domestic Transactions" section and clip it before
+        # notes/summary sections (GST Summary, points summary, etc.).
+        start_idx = None
+        for idx, line in enumerate(lines):
+            if 'domestic transactions' in line.lower():
+                start_idx = idx
+                break
+
+        if start_idx is None:
+            return []
+
+        end_idx = len(lines)
+        for idx in range(start_idx + 1, len(lines)):
+            lower = lines[idx].lower()
+            if (
+                lower.startswith('note:')
+                or 'marriott bonvoy points summary' in lower
+                or lower.startswith('gst summary')
+                or 'gst summary' in lower
+                or lower.startswith('important information')
+            ):
+                end_idx = idx
+                break
+
+        section_lines = lines[start_idx:end_idx]
+        if not section_lines:
+            return []
+
+        section_text = "\n".join(section_lines)
+
+        # Use the generic text-table parser on this clipped section.
+        transactions = table_parser._parse_text_table(section_text)
+        if not transactions:
+            return []
+
+        # Drop previous-statement payments and treat refunds as credits.
+        cleaned: List[Dict] = []
+        for tx in transactions:
+            desc = tx.get('description', '') or ''
+            amount = tx.get('amount')
+            if amount is None:
+                continue
+
+            desc_upper = desc.upper()
+            # Exclude card bill payment rows entirely; they are just the
+            # previous month's statement payment, not a current spend.
+            if 'PAYMENT' in desc_upper:
+                continue
+
+            # Keep refunds but make them negative to offset spend.
+            if 'REFUND' in desc_upper and amount > 0:
+                amount = -amount
+
+            tx['amount'] = amount
+            cleaned.append(tx)
+
+        return cleaned
+
+    def _is_sbi_card(self) -> bool:
+        """Return True if this parser is for an SBI credit card."""
+        name = (self.card_name or "").upper()
+        return "SBI" in name
+
+    def _is_yes_card(self) -> bool:
+        """Return True if this parser is for a YES Bank credit card."""
+        name = (self.card_name or "").upper()
+        return "YES" in name
+
+    def _parse_sbi_statement(self, text: str, table_parser: PDFTableParser) -> List[Dict]:
+        """Parse SBI card statements from PDF text.
+
+        SBI statements list spends under a section starting with
+        "TRANSACTIONS FOR <NAME>" and ending before the "REWARD SUMMARY" or
+        "Important Notes" blocks. Payment rows (e.g. "PAYMENT RECEIVED") are
+        above this section and thus excluded by clipping; any remaining
+        payment-like rows are also filtered out by description.
+        """
+        if not text:
+            return []
+
+        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+        if not lines:
+            return []
+
+        start_idx = None
+        for idx, line in enumerate(lines):
+            if line.upper().startswith('TRANSACTIONS FOR '):
+                start_idx = idx
+                break
+
+        if start_idx is None:
+            return []
+
+        end_idx = len(lines)
+        for idx in range(start_idx + 1, len(lines)):
+            lower = lines[idx].lower()
+            if lower.startswith('current stmt period') or lower.startswith('reward summary') or lower.startswith('important notes'):
+                end_idx = idx
+                break
+
+        section_lines = lines[start_idx:end_idx]
+        if not section_lines:
+            return []
+
+        section_text = "\n".join(section_lines)
+        transactions = table_parser._parse_text_table(section_text)
+        if not transactions:
+            return []
+
+        cleaned: List[Dict] = []
+        for tx in transactions:
+            desc = tx.get('description', '') or ''
+            amount = tx.get('amount')
+            if amount is None:
+                continue
+
+            desc_upper = desc.upper()
+
+            # Exclude card payment rows if any slip through
+            if 'PAYMENT RECEIVED' in desc_upper or 'PAYMENT' in desc_upper:
+                continue
+
+            tx['amount'] = amount
+            cleaned.append(tx)
+
+        return cleaned
+
+    def _parse_yes_statement(self, text: str, table_parser: PDFTableParser) -> List[Dict]:
+        """Parse YES Bank credit card statements from PDF text.
+
+        We take rows between "Date Transaction Details Merchant Category
+        Amount (Rs.)" and the "End of the Statement" marker, then drop
+        payment rows like "PAYMENT RECEIVED".
+        """
+        if not text:
+            return []
+
+        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+        if not lines:
+            return []
+
+        start_idx = None
+        for idx, line in enumerate(lines):
+            if line.lower().startswith('date transaction details merchant category amount (rs.)'):
+                start_idx = idx
+                break
+
+        if start_idx is None:
+            return []
+
+        end_idx = len(lines)
+        for idx in range(start_idx + 1, len(lines)):
+            if 'end of the statement' in lines[idx].lower():
+                end_idx = idx
+                break
+
+        section_lines = lines[start_idx:end_idx]
+        if not section_lines:
+            return []
+
+        section_text = "\n".join(section_lines)
+        transactions = table_parser._parse_text_table(section_text)
+        if not transactions:
+            return []
+
+        cleaned: List[Dict] = []
+        for tx in transactions:
+            desc = tx.get('description', '') or ''
+            amount = tx.get('amount')
+            if amount is None:
+                continue
+
+            desc_upper = desc.upper()
+            if 'PAYMENT RECEIVED' in desc_upper or 'PAYMENT' in desc_upper:
+                continue
+
+            tx['amount'] = amount
+            cleaned.append(tx)
+
+        return cleaned
+
+    def _extract_sbi_email_summary(self, body_text: str) -> Optional[Dict]:
+        """Extract SBI Total/Minimum Amount Due and payment date from email body.
+
+        Email structure: labels appear as lines such as
+
+        Total amount due ()
+        1,16,870.00
+        Minimum amount due ()
+        2,391.00
+        Payment due date
+        07-Nov-2025
+        """
+        compact = re.sub(r'\s+', ' ', body_text)
+
+        # Capture the three numbers/dates following the labels in order.
+        m = re.search(
+            r'Total amount due\s*\([^)]*\)\s*([\d,]+\.?\d*)\s*Minimum amount due\s*\([^)]*\)\s*([\d,]+\.?\d*)\s*Payment due date\s*(\d{1,2}-[A-Za-z]{3}-\d{4})',
+            compact,
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+
+        try:
+            total_str = m.group(1).replace(',', '')
+            min_str = m.group(2).replace(',', '')
+            due_raw = m.group(3)
+
+            total_val = float(total_str)
+            min_val = float(min_str)
+            due_dt = self._parse_date(due_raw)
+
+            return {
+                'total_spend': total_val,
+                'total_due': total_val,
+                'min_due': min_val,
+                'payment_due_date': due_dt.strftime('%Y-%m-%d'),
+            }
+        except Exception:
+            return None
+
+    def _extract_yes_email_summary(self, body_text: str) -> Optional[Dict]:
+        """Extract YES Bank Total/Minimum Amount Due and payment date.
+
+        Email/PDF summary example:
+
+        Total Amount Due:
+        Rs. 400.80
+        Minimum Amount Due:
+        Rs. 200.00
+        Payment Due Date: 04/07/2025
+        """
+        compact = re.sub(r'\s+', ' ', body_text)
+
+        m = re.search(
+            r'Total Amount Due\s*:?\s*Rs\.?\s*([\d,]+\.?\d*)\s*Minimum Amount Due\s*:?\s*Rs\.?\s*([\d,]+\.?\d*)\s*Payment Due Date[:\s]+(NO PYMT REQD|\d{2}/\d{2}/\d{4})',
+            compact,
+            re.IGNORECASE,
+        )
+        if not m:
+            # Alternative wording used in the long PDF sample: "Total Amount Due"...
+            m = re.search(
+                r'Total Amount Due\s*:?\s*Rs\.?\s*([\d,]+\.?\d*)\s*Minimum Amount Due\s*:?\s*Rs\.?\s*([\d,]+\.?\d*)\s*Payment Due Date[:\s]+(\d{2}/\d{2}/\d{4})',
+                compact,
+                re.IGNORECASE,
+            )
+            if not m:
+                return None
+
+        try:
+            total_str = m.group(1).replace(',', '')
+            min_str = m.group(2).replace(',', '')
+            due_raw = m.group(3)
+
+            total_val = float(total_str)
+            min_val = float(min_str)
+
+            if due_raw.upper().startswith('NO PYMT REQD'):
+                payment_date = None
+            else:
+                due_dt = self._parse_date(due_raw)
+                payment_date = due_dt.strftime('%Y-%m-%d')
+
+            summary: Dict = {
+                'total_spend': total_val,
+                'total_due': total_val,
+                'min_due': min_val,
+            }
+            if payment_date:
+                summary['payment_due_date'] = payment_date
+
+            return summary
+        except Exception:
+            return None
+
+    def _is_axis_card(self) -> bool:
+        """Return True if this parser is for an Axis Bank credit card."""
+        name = (self.card_name or "").upper()
+        return "AXIS" in name
+
+    def _parse_axis_statement(self, text: str, table_parser: PDFTableParser) -> List[Dict]:
+        """Parse Axis Bank credit card statements from PDF text.
+
+        We focus on the "Account Summary" section and extract rows between
+        "Account Summary" and "**** End of Statement ****". Payment rows
+        like "BBPS PAYMENT RECEIVED" or generic "PAYMENT" rows are treated as
+        card-bill payments and excluded.
+        """
+        if not text:
+            return []
+
+        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+        if not lines:
+            return []
+
+        # Find the Account Summary section
+        start_idx = None
+        for idx, line in enumerate(lines):
+            if line.lower().startswith('account summary'):
+                start_idx = idx
+                break
+
+        if start_idx is None:
+            return []
+
+        end_idx = len(lines)
+        for idx in range(start_idx + 1, len(lines)):
+            if '**** end of statement' in lines[idx].lower():
+                end_idx = idx
+                break
+
+        section_lines = lines[start_idx:end_idx]
+        if not section_lines:
+            return []
+
+        section_text = "\n".join(section_lines)
+
+        transactions = table_parser._parse_text_table(section_text)
+        if not transactions:
+            return []
+
+        cleaned: List[Dict] = []
+        for tx in transactions:
+            desc = tx.get('description', '') or ''
+            amount = tx.get('amount')
+            if amount is None:
+                continue
+
+            desc_upper = desc.upper()
+
+            # Exclude credit-card payment rows entirely
+            if 'BBPS PAYMENT RECEIVED' in desc_upper or 'PAYMENT' in desc_upper:
+                continue
+
+            tx['amount'] = amount
+            cleaned.append(tx)
+
+        return cleaned
+
+    def _extract_hdfc_email_summary(self, body_text: str) -> Optional[Dict]:
+        """Extract HDFC Total/Minimum Amount Due and payment date from email body.
+
+        Expected compressed pattern (after whitespace normalization):
+
+        Total Amount Due  minimum amount due  payment due date (DD-MM-YYYY)
+        ₹13.00  ₹13.00  03-12-2025
+        """
+        compact = re.sub(r'\s+', ' ', body_text)
+        m = re.search(
+            r'Total Amount Due\s+minimum amount due\s+payment due date\s*\(DD-MM-YYYY\)\s+[^\d]*([\d,]+\.?\d*)\s+[^\d]*([\d,]+\.?\d*)\s+(\d{2}-\d{2}-\d{4})',
+            compact,
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+
+        try:
+            total_str = m.group(1).replace(',', '')
+            min_str = m.group(2).replace(',', '')
+            due_raw = m.group(3)
+
+            total_val = float(total_str)
+            min_val = float(min_str)
+            due_dt = self._parse_date(due_raw)
+
+            return {
+                'total_spend': total_val,
+                'total_due': total_val,
+                'min_due': min_val,
+                'payment_due_date': due_dt.strftime('%Y-%m-%d'),
+            }
+        except Exception:
+            return None
+
+    def _extract_axis_email_summary(self, body_text: str) -> Optional[Dict]:
+        """Extract Axis Total/Minimum Payment Due and payment date from email body.
+
+        Expected compressed pattern (after whitespace normalization):
+
+        Total Amount Due INR  Minimum Amount Due (INR)  Payment Due Date (DD-MM-YYYY)
+        3690.15 Cr  0 Cr  08/07/2025
+        """
+        compact = re.sub(r'\s+', ' ', body_text)
+        m = re.search(
+            r'Total Amount Due\s+INR\s+Minimum Amount Due\s*\(INR\)\s+Payment Due Date\s*\(DD-MM-YYYY\)\s+([\d,]+\.?\d*)\s*(Cr|Dr)?\s+([\d,]+\.?\d*)\s*(Cr|Dr)?\s+(\d{2}/\d{2}/\d{4})',
+            compact,
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+
+        try:
+            total_str = m.group(1).replace(',', '')
+            total_sign = m.group(2) or ''
+            min_str = m.group(3).replace(',', '')
+            # m.group(4) is min sign (Cr/Dr) but we don't currently use it
+            due_raw = m.group(5)
+
+            total_val = float(total_str)
+            # Treat Cr as negative (card is in credit), Dr/blank as positive
+            if total_sign.strip().lower() == 'cr':
+                total_val = -total_val
+
+            min_val = float(min_str)
+            due_dt = self._parse_date(due_raw)
+
+            return {
+                'total_spend': total_val,
+                'total_due': total_val,
+                'min_due': min_val,
+                'payment_due_date': due_dt.strftime('%Y-%m-%d'),
+            }
+        except Exception:
             return None
 

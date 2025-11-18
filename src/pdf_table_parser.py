@@ -197,7 +197,22 @@ class PDFTableParser:
                     date = self._parse_date(date_str)
                     amount = self._parse_amount(amount_str)
 
+                    # Adjust sign for generic credit/debit markers that appear
+                    # near the amount but are not part of the numeric token.
+                    # This is common in SBI/YES style lines like
+                    # "400.80 Dr" or "3,765.02 Cr" or "329.00 C".
                     if date and amount is not None:
+                        # Look a few characters around the amount for markers
+                        around = line[max(0, amount_start - 6): amount_start + len(amount_str) + 6]
+                        around_lower = around.lower()
+
+                        # Credit markers: "cr" or standalone "c"
+                        if re.search(r'\bcr\b', around_lower) or re.search(r'\bc\b', around_lower):
+                            amount = -abs(amount)
+                        # Debit markers: "dr" or standalone "d" -> ensure positive
+                        elif re.search(r'\bdr\b', around_lower) or re.search(r'\bd\b', around_lower):
+                            amount = abs(amount)
+
                         transactions.append({
                             'transaction_date': date.strftime('%Y-%m-%d'),
                             'description': description,

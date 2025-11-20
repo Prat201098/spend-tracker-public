@@ -334,6 +334,10 @@ def show_verify_backfill():
         parse_errors = []
         raw_text_snippets = []
 
+        # For detailed verification views
+        email_details_rows = []
+        pdf_details_rows = []
+
         for e in emails:
             try:
                 pdata = parser.parse_email(e)
@@ -364,6 +368,51 @@ def show_verify_backfill():
             if not due_date and pdata.get('due_date'):
                 due_date = pdata['due_date']
 
+            # Build Email Details row (what we pulled from the email body itself)
+            body_text = e.get('body') or ""
+            email_summary = parser._extract_monthly_summary(body_text)
+            email_due = parser._extract_due_date(body_text)
+            email_period = parser._extract_statement_period(body_text)
+
+            email_date = e.get('date')
+            email_date_str = email_date.strftime('%Y-%m-%d') if email_date else None
+
+            email_details_rows.append({
+                'card_name': card,
+                'email_date': email_date_str,
+                'from': e.get('from'),
+                'subject': e.get('subject'),
+                'has_pdf': bool(e.get('attachments')),
+                'body_total_due': (email_summary or {}).get('total_spend') if email_summary else None,
+                'body_min_due': (email_summary or {}).get('min_due') if email_summary else None,
+                'body_payment_due_date': (email_summary or {}).get('payment_due_date') or email_due,
+                'body_statement_month': (email_period or {}).get('month') if email_period else None,
+                'body_statement_year': (email_period or {}).get('year') if email_period else None,
+            })
+
+            # Build PDF Details rows (one per PDF attachment)
+            atts = e.get('attachments') or []
+            for att in atts:
+                filename = att.get('filename') or ''
+                if not filename.lower().endswith('.pdf'):
+                    continue
+
+                try:
+                    pdf_meta = parser._parse_pdf(att.get('payload') or b'')
+                except Exception:
+                    pdf_meta = {}
+
+                pdf_summary = pdf_meta.get('monthly_summary') or {}
+                pdf_details_rows.append({
+                    'card_name': card,
+                    'email_date': email_date_str,
+                    'subject': e.get('subject'),
+                    'attachment': filename,
+                    'pdf_total_due': pdf_summary.get('total_spend'),
+                    'pdf_min_due': pdf_summary.get('min_due'),
+                    'pdf_payment_due_date': pdf_meta.get('due_date'),
+                })
+
         st.subheader("Preview Transactions (not saved yet)")
         st.caption(
             f"Debug: emails fetched={len(emails)}, with transactions={emails_with_txns}, "
@@ -381,20 +430,36 @@ def show_verify_backfill():
                     st.write(f"Subject: {snip['subject']}")
                     st.code(snip['raw_text'])
 
+        # 1. PDF Transactions table
         if parsed_transactions:
             # Classify for preview display
             clf = TransactionClassifier()
             classified = clf.classify_batch(parsed_transactions)
             df = pd.DataFrame(classified)
+            st.markdown("**1. PDF Transactions**")
             st.dataframe(df, use_container_width=True, height=350)
             st.info(f"Total parsed: {len(df)} | Amount: ₹{df['amount'].sum():,.2f}")
         else:
+            st.markdown("**1. PDF Transactions**")
             st.warning("No transactions parsed from emails in this month.")
             if monthly_summary:
                 st.info("Debug: Statement summary was detected but no transaction rows matched current parsing patterns.")
 
+        # 2. PDF Details table (per attachment)
+        if pdf_details_rows:
+            st.markdown("**2. PDF Details (per attachment)**")
+            pdf_df = pd.DataFrame(pdf_details_rows)
+            st.dataframe(pdf_df, use_container_width=True, height=200)
+
+        # 3. Email Details table (per email, from body)
+        if email_details_rows:
+            st.markdown("**3. Email Details (body-derived summary)**")
+            email_df = pd.DataFrame(email_details_rows)
+            st.dataframe(email_df, use_container_width=True, height=250)
+
+        # Raw overall monthly summary from parser (for reference)
         if monthly_summary:
-            st.write("Statement summary:")
+            st.subheader("Parsed Monthly Summary (combined)")
             st.json(monthly_summary)
 
         # Reset/Commit section
@@ -433,6 +498,7 @@ def show_verify_backfill():
                             year=int(year),
                             total_spend=float(monthly_summary.get('total_spend', 0)),
                             transaction_count=len(classified),
+                            min_due=float(monthly_summary.get('min_due', 0)) if monthly_summary.get('min_due') is not None else None,
                             due_date=due_date
                         )
                     # Mark verified

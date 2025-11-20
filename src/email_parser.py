@@ -246,7 +246,8 @@ class EmailParser:
         result = {
             'transactions': [],
             'monthly_summary': None,
-            'due_date': None
+            'due_date': None,
+            'statement_period': None,
         }
         
         try:
@@ -332,6 +333,11 @@ class EmailParser:
                 due_date = self._extract_due_date(text)
                 if due_date:
                     result['due_date'] = due_date
+
+                # Extract statement period (month/year) from PDF text
+                period = self._extract_statement_period(text)
+                if period:
+                    result['statement_period'] = period
                 
         except Exception as e:
             print(f"Error parsing PDF: {e}")

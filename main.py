@@ -218,6 +218,7 @@ def fetch_and_process_emails(email_address: str, email_password: str, days_back:
                             year=period.get('year', datetime.now().year),
                             total_spend=summary.get('total_spend', 0),
                             transaction_count=len(parsed_data['transactions']),
+                            min_due=summary.get('min_due'),
                             due_date=parsed_data.get('due_date')
                         )
 

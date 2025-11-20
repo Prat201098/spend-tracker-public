@@ -68,6 +68,7 @@ class SpendDatabase:
                 month INTEGER NOT NULL,
                 year INTEGER NOT NULL,
                 total_spend REAL NOT NULL,
+                min_due REAL,
                 transaction_count INTEGER,
                 due_date DATE,
                 payment_date DATE,
@@ -78,6 +79,12 @@ class SpendDatabase:
             )
         """)
         
+        # Add additional columns if they don't exist (for existing databases)
+        try:
+            cursor.execute("ALTER TABLE monthly_summaries ADD COLUMN min_due REAL")
+        except sqlite3.OperationalError:
+            pass
+
         # Add verification columns if they don't exist
         try:
             cursor.execute("ALTER TABLE monthly_summaries ADD COLUMN verified BOOLEAN DEFAULT 0")
@@ -249,7 +256,8 @@ class SpendDatabase:
     
     def update_monthly_summary(self, card_name: str, month: int, year: int,
                               total_spend: float, transaction_count: int,
-                              due_date: str = None, payment_date: str = None,
+                              min_due: float = None, due_date: str = None,
+                              payment_date: str = None,
                               payment_status: str = 'pending'):
         """Update or create monthly summary."""
         conn = sqlite3.connect(self.db_path)
@@ -257,10 +265,10 @@ class SpendDatabase:
         
         cursor.execute("""
             INSERT OR REPLACE INTO monthly_summaries 
-            (card_name, month, year, total_spend, transaction_count, due_date, 
+            (card_name, month, year, total_spend, min_due, transaction_count, due_date, 
              payment_date, payment_status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (card_name, month, year, total_spend, transaction_count, due_date,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (card_name, month, year, total_spend, min_due, transaction_count, due_date,
               payment_date, payment_status))
         
         conn.commit()

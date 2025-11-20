@@ -175,10 +175,11 @@ class EmailParser:
                 except Exception:
                     pass
 
-        # SBI email structure:
-        # "Total amount due ()  1,16,870.00  Minimum amount due ()  2,391.00  Payment due date  07-Nov-2025"
+        # SBI email/PDF structure:
+        # e.g. "Total amount due ()  1,16,870.00  Minimum amount due ()  2,391.00  Payment due date  07-Nov-2025"
+        # or minor variants. Accept any reasonable date token after the label.
         if "SBI" in name:
-            m = re.search(r'Payment due date\s+(\d{1,2}-[A-Za-z]{3}-\d{4})', compact, re.IGNORECASE)
+            m = re.search(r'Payment\s+Due\s+Date[^0-9A-Za-z]*([0-9A-Za-z/-]+)', compact, re.IGNORECASE)
             if m:
                 try:
                     date = self._parse_date(m.group(1))
@@ -328,11 +329,18 @@ class EmailParser:
                 summary = self._extract_monthly_summary(text)
                 if summary:
                     result['monthly_summary'] = summary
+                    # If the summary itself carries a payment due date
+                    # (e.g. from SBI CKYC-based parsing), prefer that
+                    # as the PDF-level due date.
+                    pdue = summary.get('payment_due_date') if isinstance(summary, dict) else None
+                    if pdue:
+                        result['due_date'] = pdue
 
-                # Extract due date
-                due_date = self._extract_due_date(text)
-                if due_date:
-                    result['due_date'] = due_date
+                # Extract due date as a fallback when not already set
+                if not result.get('due_date'):
+                    due_date = self._extract_due_date(text)
+                    if due_date:
+                        result['due_date'] = due_date
 
                 # Extract statement period (month/year) from PDF text
                 period = self._extract_statement_period(text)
@@ -593,32 +601,96 @@ class EmailParser:
         """
         compact = re.sub(r'\s+', ' ', body_text)
 
-        # Capture the three numbers/dates following the labels in order.
+        # More flexible match: look for labels in order without requiring
+        # specific brackets; allow any non-digit text between label and
+        # value, and accept a variety of date formats.
         m = re.search(
-            r'Total amount due\s*\([^)]*\)\s*([\d,]+\.?\d*)\s*Minimum amount due\s*\([^)]*\)\s*([\d,]+\.?\d*)\s*Payment due date\s*(\d{1,2}-[A-Za-z]{3}-\d{4})',
+            r'Total\s+Amount\s+Due[^0-9]*([\d,]+\.?\d*)\s+'
+            r'Minimum\s+Amount\s+Due[^0-9]*([\d,]+\.?\d*)\s+'
+            r'Payment\s+Due\s+Date[^0-9A-Za-z]*([0-9A-Za-z/-]+)',
             compact,
             re.IGNORECASE,
         )
-        if not m:
+        if m:
+            try:
+                total_str = m.group(1).replace(',', '')
+                min_str = m.group(2).replace(',', '')
+                due_raw = m.group(3)
+
+                total_val = float(total_str)
+                min_val = float(min_str)
+                due_dt = self._parse_date(due_raw)
+
+                return {
+                    'total_spend': total_val,
+                    'total_due': total_val,
+                    'min_due': min_val,
+                    'payment_due_date': due_dt.strftime('%Y-%m-%d'),
+                }
+            except Exception:
+                # Fall through to CKYC-based parsing
+                pass
+
+        # Fallback for SBI PDFs where the summary is rendered near the
+        # CKYC number without explicit labels. Example structure:
+        #   CKYC No. : 20087917895677  1,16,870.00  2,391.00  ...
+        #   18 Oct 2025  07 Nov 2025  ...
+        # Here, first amount after CKYC is Total Amount Due, the second
+        # amount is Minimum Amount Due, the first date is statement
+        # date and the second date is the payment due date.
+        m_ckyc = re.search(r'CKYC\s*No\.\s*:\s*([0-9]{9,})', compact, re.IGNORECASE)
+        if not m_ckyc:
+            return None
+
+        tail = compact[m_ckyc.end():]
+
+        # Extract numeric amounts after CKYC number
+        num_matches = re.findall(r'([\d,]+\.?\d*)', tail)
+        if len(num_matches) < 2:
             return None
 
         try:
-            total_str = m.group(1).replace(',', '')
-            min_str = m.group(2).replace(',', '')
-            due_raw = m.group(3)
-
+            total_str = num_matches[0].replace(',', '')
+            min_str = num_matches[1].replace(',', '')
             total_val = float(total_str)
             min_val = float(min_str)
-            due_dt = self._parse_date(due_raw)
-
-            return {
-                'total_spend': total_val,
-                'total_due': total_val,
-                'min_due': min_val,
-                'payment_due_date': due_dt.strftime('%Y-%m-%d'),
-            }
         except Exception:
             return None
+
+        # Extract dates in "dd Mon yyyy" style after the numeric block
+        date_matches = re.findall(r'(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})', tail)
+        payment_date_str = None
+        statement_date_str = None
+        if len(date_matches) >= 2:
+            statement_date_str = date_matches[0]
+            payment_date_str = date_matches[1]
+
+        payment_iso = None
+        if payment_date_str:
+            try:
+                due_dt = self._parse_date(payment_date_str)
+                payment_iso = due_dt.strftime('%Y-%m-%d')
+            except Exception:
+                payment_iso = None
+
+        summary: Dict = {
+            'total_spend': total_val,
+            'total_due': total_val,
+            'min_due': min_val,
+        }
+
+        # Optionally expose statement date for future use
+        if statement_date_str:
+            try:
+                stmt_dt = self._parse_date(statement_date_str)
+                summary['statement_date'] = stmt_dt.strftime('%Y-%m-%d')
+            except Exception:
+                pass
+
+        if payment_iso:
+            summary['payment_due_date'] = payment_iso
+
+        return summary
 
     def _extract_yes_email_summary(self, body_text: str) -> Optional[Dict]:
         """Extract YES Bank Total/Minimum Amount Due and payment date.

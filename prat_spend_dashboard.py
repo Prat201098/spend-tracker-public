@@ -279,13 +279,15 @@ def show_verify_backfill():
                 return
 
             # Primary search: use configured sender + subject filters
-            # For preview, scan the full month (no max_fetch limit)
+            # For preview, scan the month but cap how many emails we fetch
+            # to avoid downloading hundreds of promo mails from the same
+            # sender (e.g. SBI offers).
             emails = ef.search_emails(
                 sender_pattern=bcfg.get('sender_pattern'),
                 subject_keywords=bcfg.get('subject_keywords'),
                 start_date=first,
                 end_date=last,
-                max_fetch=None
+                max_fetch=50
             )
 
             # Fallback debug search: date-only, no sender/subject filter
@@ -296,7 +298,7 @@ def show_verify_backfill():
                     subject_keywords=None,
                     start_date=first,
                     end_date=last,
-                    max_fetch=None
+                    max_fetch=50
                 )
 
             ef.disconnect()

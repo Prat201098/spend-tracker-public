@@ -146,8 +146,11 @@ class PDFTableParser:
                 i += 1
                 continue
 
-            # Look for date pattern
-            date_match = re.search(r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})', line)
+            # Look for date pattern (numeric or textual, e.g. 18 Sep 25)
+            date_match = re.search(
+                r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s+\w{3}\s+\d{2,4}|\d{1,2}\s+\w+\s+\d{2,4})',
+                line,
+            )
             if not date_match:
                 i += 1
                 continue

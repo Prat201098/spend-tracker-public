@@ -358,8 +358,10 @@ class EmailParser:
         """Parse various date formats."""
         date_formats = [
             '%d/%m/%Y', '%d-%m-%Y', '%d/%m/%y', '%d-%m-%y',
-            '%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d', '%d %b %Y',
-            '%d %B %Y', '%d-%b-%Y', '%d-%b-%y'
+            '%m/%d/%Y', '%m-%d-%Y', '%Y-%m-%d',
+            '%d %b %Y', '%d %B %Y',
+            '%d-%b-%Y', '%d-%b-%y',
+            '%d %b %y',  # <-- ADD THIS to handle "18 Sep 25"
         ]
         
         for fmt in date_formats:
@@ -505,13 +507,29 @@ class EmailParser:
 
         SBI statements list spends under a section starting with
         "TRANSACTIONS FOR <NAME>" and ending before the "REWARD SUMMARY" or
-        "Important Notes" blocks. Payment rows (e.g. "PAYMENT RECEIVED") are
-        above this section and thus excluded by clipping; any remaining
-        payment-like rows are also filtered out by description.
+        "Important Notes" blocks.
+
+        Each transaction is on a single line, for example:
+
+            18 Sep 25 ZOMATO                  BANGALORE      IND  586.03 D
+            18 Sep 25 FARMERS CAFE            MUMBAI         MAH (Pay in EMIs)  3,080.00 D
+
+        where:
+          - leading "dd Mon yy" is the transaction date,
+          - the middle chunk is the merchant/description,
+          - the last numeric is the amount,
+          - final "D" or "C" indicates debit/credit.
+
+        We:
+          - extract that section,
+          - apply a row regex per line,
+          - skip "PAYMENT RECEIVED" rows,
+          - treat "C" as negative amounts.
         """
         if not text:
             return []
 
+        # Split into non-empty trimmed lines
         lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
         if not lines:
             return []
@@ -538,81 +556,82 @@ class EmailParser:
                 end_idx = idx
                 break
 
-        section_lines = lines[start_idx:end_idx]
+        section_lines = lines[start_idx + 1:end_idx]
         if not section_lines:
             return []
 
-        # Build blocks that terminate with a standalone D/C line
-        blocks: List[List[str]] = []
-        current_block: List[str] = []
+        # Drop header row that starts with "Date"
+        tx_lines: List[str] = []
         for ln in section_lines:
-            if ln in ('D', 'C'):
-                current_block.append(ln)
-                if len(current_block) > 1:
-                    blocks.append(current_block)
-                current_block = []
-            else:
-                current_block.append(ln)
+            if ln.lower().startswith('date'):
+                continue
+            tx_lines.append(ln)
+
+        # One-line row regex:
+        #   <date> <description...> <amount> <D/C>
+        row_re = re.compile(
+            r'^(?P<date>\d{2}\s+[A-Za-z]{3}\s+\d{2})\s+'
+            r'(?P<middle>.+?)\s+'
+            r'(?P<amount>[\d,]+\.\d{2})\s+'
+            r'(?P<dc>[DC])$'
+        )
 
         rows: List[Dict] = []
-        last_date: Optional[str] = None
-        money_re = re.compile(r'^[\d,]+\.\d{2}$')
-        date_re = re.compile(r'^\d{2}\s+[A-Z][a-z]{3}\s+\d{2}$')
 
-        for block in blocks:
-            if not block or block[-1] not in ('D', 'C'):
-                continue
-            flag = block[-1]
-
-            # Find the last money line before the flag
-            amount_idx = -1
-            for k in range(len(block) - 2, -1, -1):
-                if money_re.match(block[k]):
-                    amount_idx = k
-                    break
-            if amount_idx == -1:
+        for ln in tx_lines:
+            m = row_re.match(ln)
+            if not m:
+                # Some statements occasionally break a long description onto the next line.
+                # If this line does not match the pattern and we already have at least
+                # one row, append it as a continuation of the last description.
+                if rows:
+                    extra = ln.strip()
+                    if extra:
+                        new_desc = (rows[-1]['description'] + ' ' + extra).strip()
+                        rows[-1]['description'] = new_desc
+                        rows[-1]['merchant'] = new_desc
                 continue
 
-            try:
-                amount = float(block[amount_idx].replace(',', ''))
-            except Exception:
-                continue
-            if flag == 'C':
-                amount = -amount
+            date_str = m.group('date')
+            rest = m.group('middle').strip()
+            amount_str = m.group('amount')
+            dc_flag = m.group('dc')
 
-            first_line = block[0]
-            if date_re.match(first_line):
-                date_str = first_line
-                last_date = date_str
-                merchant_lines = block[1:amount_idx]
-            else:
-                if last_date is None:
-                    continue
-                date_str = last_date
-                merchant_lines = block[0:amount_idx]
+            # Normalize spaces in description
+            desc = ' '.join(rest.split())
+            desc_upper = desc.upper()
 
-            merchant = ' '.join(merchant_lines).strip()
-            if not merchant:
-                continue
-            if merchant.upper().startswith('PAYMENT RECEIVED'):
+            # Skip card bill payment rows
+            if desc_upper.startswith('PAYMENT RECEIVED'):
                 continue
 
+            # Parse date
             try:
                 iso_date = self._parse_date(date_str).strftime('%Y-%m-%d')
             except Exception:
-                iso_date = date_str
+                iso_date = date_str  # fallback: keep original format
+
+            # Parse amount
+            try:
+                amount = float(amount_str.replace(',', ''))
+            except Exception:
+                continue
+
+            # Treat credits as negative amounts
+            if dc_flag.upper() == 'C':
+                amount = -amount
 
             rows.append({
                 'transaction_date': iso_date,
-                'description': merchant,
-                'merchant': merchant,
+                'description': desc,
+                'merchant': desc,
                 'amount': amount,
             })
 
+        # If this parser failed to produce any rows, fall back to the generic text-table parser
         if rows:
             return rows
 
-        # Fallback to generic text-table parser if strict parsing yields nothing
         section_text = '\n'.join(section_lines)
         transactions = table_parser._parse_text_table(section_text)
         cleaned: List[Dict] = []
@@ -624,26 +643,39 @@ class EmailParser:
         return cleaned
 
     def _extract_sbi_email_summary(self, body_text: str) -> Optional[Dict]:
-        """Extract SBI Total/Minimum Amount Due and payment date from email body.
+        """Extract SBI Total/Minimum Amount Due and payment date.
 
-        Email structure: labels appear as lines such as
+        Works for both:
+        - Email body (usually no summary => returns None)
+        - SBI PDF text, where we expect something like:
 
-        Total amount due ()
-        1,16,870.00
-        Minimum amount due ()
-        2,391.00
-        Payment due date
-        07-Nov-2025
+            Total Amount Due ( ` )
+            1,16,870.00
+            ...
+            Minimum Amount Due( ` )
+            ...
+            2,391.00
+            ...
+            Payment Due Date
+            ...
+            07 Nov 2025
+
+        Preferred approach:
+          1. Use a flexible regex over a whitespace-normalized string
+             to capture Total, Minimum and Payment Due Date.
+          2. Fallback on the CKYC block to at least recover
+             Minimum Amount Due and Payment Due Date when labels
+             are not easily matched.
         """
         compact = re.sub(r'\s+', ' ', body_text)
 
-        # More flexible match: look for labels in order without requiring
-        # specific brackets; allow any non-digit text between label and
-        # value, and accept a variety of date formats.
+        # --- Primary: label-based parsing over the compact text ---
+        # Require currency amounts with decimals (e.g. 1,16,870.00), and
+        # a "dd Mon yyyy" style date after Payment Due Date.
         m = re.search(
-            r'Total\s+Amount\s+Due[^0-9]*([\d,]+\.?\d*)\s+'
-            r'Minimum\s+Amount\s+Due[^0-9]*([\d,]+\.?\d*)\s+'
-            r'Payment\s+Due\s+Date[^0-9A-Za-z]*([0-9A-Za-z/-]+)',
+            r'Total\s+Amount\s+Due.*?([\d,]+\.\d{2}).*?'
+            r'Minimum\s+Amount\s+Due.*?([\d,]+\.\d{2}).*?'
+            r'Payment\s+Due\s+Date.*?(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})',
             compact,
             re.IGNORECASE,
         )
@@ -664,64 +696,63 @@ class EmailParser:
                     'payment_due_date': due_dt.strftime('%Y-%m-%d'),
                 }
             except Exception:
-                # Fall through to CKYC-based parsing
+                # fall through to CKYC-based parsing
                 pass
 
-        # Fallback for SBI PDFs where the summary is rendered near the
-        # CKYC number without explicit labels. Example structure:
-        #   CKYC No. : 20087917895677  1,16,870.00  2,391.00  ...
-        #   18 Oct 2025  07 Nov 2025  ...
-        # Here, first amount after CKYC is Total Amount Due, the second
-        # amount is Minimum Amount Due, the first date is statement
-        # date and the second date is the payment due date.
+        # --- Secondary: CKYC-based fallback ---
+        #
+        # Typical structure near CKYC:
+        #   CKYC No. : 20087917895677  2,391.00  ...
+        #   Credit Limit( ` )  2,02,000.00 ...
+        #   ...
+        #   Statement Date 18 Oct 2025 ...
+        #   ...
+        #   Payment Due Date ... 07 Nov 2025 ...
+        #
+        # Here:
+        #   - first amount after CKYC is Minimum Amount Due (not Total),
+        #   - later amounts are credit/cash limits,
+        #   - the final "dd Mon yyyy" in this block is Payment Due Date.
         m_ckyc = re.search(r'CKYC\s*No\.\s*:\s*([0-9]{9,})', compact, re.IGNORECASE)
         if not m_ckyc:
             return None
 
         tail = compact[m_ckyc.end():]
 
-        # Extract numeric amounts after CKYC number
-        num_matches = re.findall(r'([\d,]+\.?\d*)', tail)
-        if len(num_matches) < 2:
-            return None
-
-        try:
-            total_str = num_matches[0].replace(',', '')
-            min_str = num_matches[1].replace(',', '')
-            total_val = float(total_str)
-            min_val = float(min_str)
-        except Exception:
-            return None
-
-        # Extract dates in "dd Mon yyyy" style after the numeric block
+        num_matches = re.findall(r'([\d,]+\.\d{2})', tail)
         date_matches = re.findall(r'(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})', tail)
-        payment_date_str = None
-        statement_date_str = None
-        if len(date_matches) >= 2:
-            statement_date_str = date_matches[0]
-            payment_date_str = date_matches[1]
 
-        payment_iso = None
-        if payment_date_str:
+        min_val: Optional[float] = None
+        if num_matches:
+            # In practice, first currency amount after CKYC is Minimum Amount Due.
             try:
-                due_dt = self._parse_date(payment_date_str)
+                min_val = float(num_matches[0].replace(',', ''))
+            except Exception:
+                min_val = None
+
+        payment_iso: Optional[str] = None
+        if date_matches:
+            # The last "dd Mon yyyy" in this tail is the Payment Due Date.
+            last_date = date_matches[-1]
+            try:
+                due_dt = self._parse_date(last_date)
                 payment_iso = due_dt.strftime('%Y-%m-%d')
             except Exception:
                 payment_iso = None
 
+        # If we couldn't identify anything, bail out
+        if min_val is None and payment_iso is None:
+            return None
+
         summary: Dict = {
-            'total_spend': total_val,
-            'total_due': total_val,
+            # We do NOT try to guess total_spend / total_due from CKYC block,
+            # as those amounts (credit limits, etc.) are not guaranteed to be
+            # the statement due. Leave them None so callers can fall back
+            # to computed totals if needed.
+            'total_spend': None,
+            'total_due': None,
             'min_due': min_val,
         }
-
-        # Optionally expose statement date for future use
-        if statement_date_str:
-            try:
-                stmt_dt = self._parse_date(statement_date_str)
-                summary['statement_date'] = stmt_dt.strftime('%Y-%m-%d')
-            except Exception:
-                pass
 
         if payment_iso:
             summary['payment_due_date'] = payment_iso

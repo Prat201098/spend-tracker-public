@@ -13,6 +13,7 @@ except Exception:
 from datetime import datetime, timedelta
 import sys
 from pathlib import Path
+import re
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent))
@@ -273,6 +274,12 @@ def show_verify_backfill():
             imap_port=config['email']['imap_port'],
             use_ssl=config['email']['use_ssl']
         )
+
+        emails = []
+        fallback_emails = []
+        emails_for_parse = []
+        used_fallback = False
+
         with st.spinner("Connecting and fetching emails for selected month..."):
             if not ef.connect(email_address, email_password):
                 st.error("Failed to connect to email.")
@@ -291,7 +298,6 @@ def show_verify_backfill():
             )
 
             # Fallback debug search: date-only, no sender/subject filter
-            fallback_emails = []
             if not emails:
                 fallback_emails = ef.search_emails(
                     sender_pattern=None,
@@ -301,9 +307,52 @@ def show_verify_backfill():
                     max_fetch=50
                 )
 
+            # Decide which emails to parse
+            emails_for_parse = emails
+            if not emails and fallback_emails:
+                filtered = []
+                domain = None
+                if bcfg.get("sender_pattern"):
+                    domain = bcfg["sender_pattern"].lstrip("@").lower()
+
+                subj_keywords = [
+                    re.sub(r"\s+", " ", kw.lower()).strip()
+                    for kw in (bcfg.get("subject_keywords") or [])
+                ]
+
+                for e in fallback_emails:
+                    from_addr = (e.get("from") or "").lower()
+                    subject_raw = (e.get("subject") or "").lower()
+                    subject = re.sub(r"\s+", " ", subject_raw).strip()
+
+                    matches_sender = True
+                    if domain:
+                        matches_sender = domain in from_addr
+
+                    matches_subject = True
+                    if subj_keywords:
+                        matches_subject = any(kw in subject for kw in subj_keywords)
+
+                    # Consider candidate if either sender OR subject matches
+                    if matches_sender or matches_subject:
+                        filtered.append(e)
+
+                if filtered:
+                    emails_for_parse = filtered
+                else:
+                    emails_for_parse = fallback_emails
+
+                used_fallback = True
+
             ef.disconnect()
 
-        st.info(f"Found {len(emails)} emails for {card} in {month}/{year}.")
+        if used_fallback:
+            st.info(
+                f"No emails matched the strict filters for {card} in {month}/{year}. "
+                f"Using {len(emails_for_parse)} fallback emails from date-only search."
+            )
+        else:
+            st.info(f"Found {len(emails_for_parse)} emails for {card} in {month}/{year}.")
 
         # Debug: show raw emails and attachments for matched emails
         if emails:
@@ -321,7 +370,14 @@ def show_verify_backfill():
             with st.expander("Debug: fallback emails (date-only search)"):
                 for e in fallback_emails:
                     st.write(f"{e.get('date')} | {e.get('from')} | {e.get('subject')}")
-        st.caption(f"Debug: pdf_password configured = {'yes' if bcfg.get('pdf_password') else 'no'}")
+        st.caption(
+            f"Debug: pdf_password configured = {'yes' if bcfg.get('pdf_password') else 'no'}" 
+        )
+        st.caption(
+            f"Debug: strict emails = {len(emails)}, "
+            f"fallback date-only emails = {len(fallback_emails)}, "
+            f"parsed emails = {len(emails_for_parse)} (used_fallback={used_fallback})"
+        )
 
         # Parse emails (no DB write)
         parser = EmailParser(card, pdf_password=bcfg.get('pdf_password'))
@@ -338,7 +394,7 @@ def show_verify_backfill():
         email_details_rows = []
         pdf_details_rows = []
 
-        for e in emails:
+        for e in emails_for_parse:
             try:
                 pdata = parser.parse_email(e)
             except Exception as ex:
@@ -415,7 +471,7 @@ def show_verify_backfill():
 
         st.subheader("Preview Transactions (not saved yet)")
         st.caption(
-            f"Debug: emails fetched={len(emails)}, with transactions={emails_with_txns}, "
+            f"Debug: emails parsed={len(emails_for_parse)}, with transactions={emails_with_txns}, "
             f"without transactions={emails_without_txns}, parse errors={len(parse_errors)}"
         )
         if parse_errors:

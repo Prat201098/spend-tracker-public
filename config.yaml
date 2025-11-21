@@ -15,53 +15,53 @@ email:
   bank_emails:
     # HDFC Cards
     - card_name: "HDFC Marriott Bonvoy"
-      sender_pattern: "@hdfcbank.net"
+      sender_pattern: "Emailstatements.cards@hdfcbank.net"
       subject_keywords:
         - "Marriott Bonvoy HDFC Bank Credit Card Statement"
       pdf_password: null
 
     - card_name: "HDFC Millennia"
-      sender_pattern: "@hdfcbank.net"
+      sender_pattern: "Emailstatements.cards@hdfcbank.net"
       subject_keywords:
         - "Millennia Credit Card Statement"
       pdf_password: null
 
     # Axis Bank Cards
     - card_name: "Axis Neo"
-      sender_pattern: "@axisbank.com"
+      sender_pattern: "cc.statements@axisbank.com"
       subject_keywords:
         - "Neo Credit Card Statement ending"
       pdf_password: null
 
     - card_name: "Axis Atlas"
-      sender_pattern: "@axisbank.com"
+      sender_pattern: "cc.statements@axisbank.com"
       subject_keywords:
         - "Axis Bank Atlas Credit Card ending"
       pdf_password: null
 
     - card_name: "Axis Neo Rupay"
-      sender_pattern: "@axisbank.com"
+      sender_pattern: "cc.statements@axisbank.com"
       subject_keywords:
         - "Neo Rupay Credit Card Statement ending"
       pdf_password: null
 
     # YES Bank
     - card_name: "Yes First Preferred"
-      sender_pattern: "@yesbank.in"
+      sender_pattern: "estatement@yesbank.in"
       subject_keywords:
         - "YES_First_Preferred Credit Card E-Statement"
       pdf_password: null
 
     # SBI Card
     - card_name: "SBI Vistara Prime"
-      sender_pattern: "@sbicard.com"
+      sender_pattern: "Statements@sbicard.com"
       subject_keywords:
         - "Club Vistara SBI Card PRIME Monthly Statement"
       pdf_password: null
 
     # AMEX (no attachment, body-only parsing)
     - card_name: "AMEX Platinum Travel"
-      sender_pattern: "@welcome.americanexpress.com"
+      sender_pattern: "AmericanExpress@welcome.americanexpress.com"
       subject_keywords:
         - "american express"  # Generic, but sender is unique
         - "online statement is ready to view"

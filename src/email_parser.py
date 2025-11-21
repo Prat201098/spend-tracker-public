@@ -406,20 +406,27 @@ class EmailParser:
         if not lines:
             return []
 
-        # Locate the "Domestic Transactions" section and clip it before
-        # notes/summary sections (GST Summary, points summary, etc.).
+        # Locate the exact "Domestic Transactions" header
         start_idx = None
         for idx, line in enumerate(lines):
-            if 'domestic transactions' in line.lower():
+            if line.lower() == 'domestic transactions':
                 start_idx = idx
                 break
 
         if start_idx is None:
             return []
 
+        # Advance to the row after the header line that contains "DATE & TIME"
+        i = start_idx + 1
+        while i < len(lines) and 'date & time' not in lines[i].lower():
+            i += 1
+        if i < len(lines):
+            i += 1  # skip the header row itself
+
+        # Determine the end of the Domestic Transactions section
         end_idx = len(lines)
-        for idx in range(start_idx + 1, len(lines)):
-            lower = lines[idx].lower()
+        for j in range(i, len(lines)):
+            lower = lines[j].lower()
             if (
                 lower.startswith('note:')
                 or 'marriott bonvoy points summary' in lower
@@ -427,42 +434,61 @@ class EmailParser:
                 or 'gst summary' in lower
                 or lower.startswith('important information')
             ):
-                end_idx = idx
+                end_idx = j
                 break
 
-        section_lines = lines[start_idx:end_idx]
-        if not section_lines:
+        region = lines[i:end_idx]
+        if not region:
             return []
 
-        section_text = "\n".join(section_lines)
+        rows: List[Dict] = []
+        money_re = re.compile(r'[\d,]+\.\d{2}')
+        row_re = re.compile(r'^(?P<date>\d{2}/\d{2}/\d{4})\|\s*(?P<time>\d{2}:\d{2})\s+(?P<rest>.+)$')
 
-        # Use the generic text-table parser on this clipped section.
-        transactions = table_parser._parse_text_table(section_text)
-        if not transactions:
-            return []
+        for ln in region:
+            m = row_re.match(ln)
+            if not m:
+                continue
+            date_str = m.group('date')
+            rest = m.group('rest').strip()
 
-        # Drop previous-statement payments and treat refunds as credits.
-        cleaned: List[Dict] = []
-        for tx in transactions:
-            desc = tx.get('description', '') or ''
-            amount = tx.get('amount')
-            if amount is None:
+            matches = list(re.finditer(money_re, rest))
+            if not matches:
+                continue
+            last = matches[-1]
+            amount_str = last.group(0)
+            try:
+                amount = float(amount_str.replace(',', ''))
+            except Exception:
                 continue
 
-            desc_upper = desc.upper()
-            # Exclude card bill payment rows entirely; they are just the
-            # previous month's statement payment, not a current spend.
+            merchant = rest[:last.start()].strip()
+            if not merchant:
+                continue
+
+            desc_upper = merchant.upper()
+            # Exclude card bill payment rows entirely
             if 'PAYMENT' in desc_upper:
                 continue
-
-            # Keep refunds but make them negative to offset spend.
+            # Keep refunds but make them negative to offset spend
             if 'REFUND' in desc_upper and amount > 0:
                 amount = -amount
 
-            tx['amount'] = amount
-            cleaned.append(tx)
+            try:
+                dt = self._parse_date(date_str)
+                iso_date = dt.strftime('%Y-%m-%d')
+            except Exception:
+                # If parsing fails, keep original as best-effort ISO pass-through
+                iso_date = date_str
 
-        return cleaned
+            rows.append({
+                'transaction_date': iso_date,
+                'description': merchant,
+                'merchant': merchant,
+                'amount': amount,
+            })
+
+        return rows
 
     def _is_sbi_card(self) -> bool:
         """Return True if this parser is for an SBI credit card."""
@@ -490,6 +516,7 @@ class EmailParser:
         if not lines:
             return []
 
+        # Find the start of the transactions section
         start_idx = None
         for idx, line in enumerate(lines):
             if line.upper().startswith('TRANSACTIONS FOR '):
@@ -499,10 +526,15 @@ class EmailParser:
         if start_idx is None:
             return []
 
+        # Find the end of the transactions section
         end_idx = len(lines)
         for idx in range(start_idx + 1, len(lines)):
             lower = lines[idx].lower()
-            if lower.startswith('current stmt period') or lower.startswith('reward summary') or lower.startswith('important notes'):
+            if (
+                lower.startswith('current stmt period')
+                or lower.startswith('reward summary')
+                or lower.startswith('important notes')
+            ):
                 end_idx = idx
                 break
 
@@ -510,81 +542,85 @@ class EmailParser:
         if not section_lines:
             return []
 
-        section_text = "\n".join(section_lines)
-        transactions = table_parser._parse_text_table(section_text)
-        if not transactions:
-            return []
+        # Build blocks that terminate with a standalone D/C line
+        blocks: List[List[str]] = []
+        current_block: List[str] = []
+        for ln in section_lines:
+            if ln in ('D', 'C'):
+                current_block.append(ln)
+                if len(current_block) > 1:
+                    blocks.append(current_block)
+                current_block = []
+            else:
+                current_block.append(ln)
 
+        rows: List[Dict] = []
+        last_date: Optional[str] = None
+        money_re = re.compile(r'^[\d,]+\.\d{2}$')
+        date_re = re.compile(r'^\d{2}\s+[A-Z][a-z]{3}\s+\d{2}$')
+
+        for block in blocks:
+            if not block or block[-1] not in ('D', 'C'):
+                continue
+            flag = block[-1]
+
+            # Find the last money line before the flag
+            amount_idx = -1
+            for k in range(len(block) - 2, -1, -1):
+                if money_re.match(block[k]):
+                    amount_idx = k
+                    break
+            if amount_idx == -1:
+                continue
+
+            try:
+                amount = float(block[amount_idx].replace(',', ''))
+            except Exception:
+                continue
+            if flag == 'C':
+                amount = -amount
+
+            first_line = block[0]
+            if date_re.match(first_line):
+                date_str = first_line
+                last_date = date_str
+                merchant_lines = block[1:amount_idx]
+            else:
+                if last_date is None:
+                    continue
+                date_str = last_date
+                merchant_lines = block[0:amount_idx]
+
+            merchant = ' '.join(merchant_lines).strip()
+            if not merchant:
+                continue
+            if merchant.upper().startswith('PAYMENT RECEIVED'):
+                continue
+
+            try:
+                iso_date = self._parse_date(date_str).strftime('%Y-%m-%d')
+            except Exception:
+                iso_date = date_str
+
+            rows.append({
+                'transaction_date': iso_date,
+                'description': merchant,
+                'merchant': merchant,
+                'amount': amount,
+            })
+
+        if rows:
+            return rows
+
+        # Fallback to generic text-table parser if strict parsing yields nothing
+        section_text = '\n'.join(section_lines)
+        transactions = table_parser._parse_text_table(section_text)
         cleaned: List[Dict] = []
         for tx in transactions:
             desc = tx.get('description', '') or ''
-            amount = tx.get('amount')
-            if amount is None:
+            if desc.upper().startswith('PAYMENT RECEIVED'):
                 continue
-
-            desc_upper = desc.upper()
-
-            # Exclude card payment rows if any slip through
-            if desc_upper.startswith('PAYMENT RECEIVED'):
-                continue
-
-            tx['amount'] = amount
             cleaned.append(tx)
-
-        return cleaned
-
-    def _parse_yes_statement(self, text: str, table_parser: PDFTableParser) -> List[Dict]:
-        """Parse YES Bank credit card statements from PDF text.
-
-        We take rows between "Date Transaction Details Merchant Category
-        Amount (Rs.)" and the "End of the Statement" marker, then drop
-        payment rows like "PAYMENT RECEIVED".
-        """
-        if not text:
-            return []
-
-        lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
-        if not lines:
-            return []
-
-        start_idx = None
-        for idx, line in enumerate(lines):
-            if line.lower().startswith('date transaction details merchant category amount (rs.)'):
-                start_idx = idx
-                break
-
-        if start_idx is None:
-            return []
-
-        end_idx = len(lines)
-        for idx in range(start_idx + 1, len(lines)):
-            if 'end of the statement' in lines[idx].lower():
-                end_idx = idx
-                break
-
-        section_lines = lines[start_idx:end_idx]
-        if not section_lines:
-            return []
-
-        section_text = "\n".join(section_lines)
-        transactions = table_parser._parse_text_table(section_text)
-        if not transactions:
-            return []
-
-        cleaned: List[Dict] = []
-        for tx in transactions:
-            desc = tx.get('description', '') or ''
-            amount = tx.get('amount')
-            if amount is None:
-                continue
-
-            desc_upper = desc.upper()
-            if 'PAYMENT RECEIVED' in desc_upper or 'PAYMENT' in desc_upper:
-                continue
-
-            tx['amount'] = amount
-            cleaned.append(tx)
-
         return cleaned
 
     def _extract_sbi_email_summary(self, body_text: str) -> Optional[Dict]:
@@ -766,10 +802,10 @@ class EmailParser:
         if not lines:
             return []
 
-        # Find the Account Summary section
         start_idx = None
         for idx, line in enumerate(lines):
-            if line.lower().startswith('account summary'):
+            low = line.lower()
+            if ('date' in low) and ('amount (rs.)' in low):
                 start_idx = idx
                 break
 
@@ -778,37 +814,41 @@ class EmailParser:
 
         end_idx = len(lines)
         for idx in range(start_idx + 1, len(lines)):
-            if '**** end of statement' in lines[idx].lower():
+            low = lines[idx].lower()
+            if 'end of statement' in low or '**** end of statement' in low:
                 end_idx = idx
                 break
 
-        section_lines = lines[start_idx:end_idx]
-        if not section_lines:
-            return []
-
-        section_text = "\n".join(section_lines)
-
-        transactions = table_parser._parse_text_table(section_text)
-        if not transactions:
-            return []
-
-        cleaned: List[Dict] = []
-        for tx in transactions:
-            desc = tx.get('description', '') or ''
-            amount = tx.get('amount')
-            if amount is None:
+        rows: List[Dict] = []
+        row_re = re.compile(r'^(?P<date>\d{2}/\d{2}/\d{4})\s+(?P<middle>.+?)\s+(?P<amount>[\d,]+\.\d{2})\s+(?P<dc>Cr|Dr)\s*$')
+        for ln in lines[start_idx + 1:end_idx]:
+            if not ln or ln.lower().startswith('card no:'):
                 continue
-
-            desc_upper = desc.upper()
-
-            # Exclude credit-card payment rows entirely
-            if 'BBPS PAYMENT RECEIVED' in desc_upper or 'PAYMENT' in desc_upper:
+            m = row_re.match(ln)
+            if not m:
                 continue
+            date_str = m.group('date')
+            desc = m.group('middle').strip()
+            try:
+                amount = float(m.group('amount').replace(',', ''))
+            except Exception:
+                continue
+            if m.group('dc') == 'Cr':
+                amount = -amount
+            if 'PAYMENT' in desc.upper():
+                continue
+            try:
+                iso_date = self._parse_date(date_str).strftime('%Y-%m-%d')
+            except Exception:
+                iso_date = date_str
+            rows.append({
+                'transaction_date': iso_date,
+                'description': desc,
+                'merchant': desc,
+                'amount': amount,
+            })
 
-            tx['amount'] = amount
-            cleaned.append(tx)
-
-        return cleaned
+        return rows
 
     def _extract_hdfc_email_summary(self, body_text: str) -> Optional[Dict]:
         """Extract HDFC Total/Minimum Amount Due and payment date from email body.

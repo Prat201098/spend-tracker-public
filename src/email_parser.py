@@ -525,7 +525,7 @@ class EmailParser:
             desc_upper = desc.upper()
 
             # Exclude card payment rows if any slip through
-            if 'PAYMENT RECEIVED' in desc_upper or 'PAYMENT' in desc_upper:
+            if desc_upper.startswith('PAYMENT RECEIVED'):
                 continue
 
             tx['amount'] = amount
